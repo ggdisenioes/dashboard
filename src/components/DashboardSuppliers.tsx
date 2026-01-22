@@ -503,6 +503,16 @@ export default function DashboardSuppliers() {
   const [fuzzySuggestions, setFuzzySuggestions] = useState<FuzzySuggestion[]>([]);
   const [fuzzyApprovedAliases, setFuzzyApprovedAliases] = useState<Record<string, string>>({});
 
+  // UI feedback
+  const [toast, setToast] = useState<string | null>(null);
+  const toastTimerRef = useRef<number | null>(null);
+
+  function showToast(msg: string) {
+    setToast(msg);
+    if (toastTimerRef.current) window.clearTimeout(toastTimerRef.current);
+    toastTimerRef.current = window.setTimeout(() => setToast(null), 1800);
+  }
+
   // Keep latest values to avoid stale closures in click handlers
   const supplierGroupsRef = useRef<SupplierGroup[]>([]);
   const fuzzyApprovedAliasesRef = useRef<Record<string, string>>({});
@@ -510,6 +520,11 @@ export default function DashboardSuppliers() {
   // IMPORTANT: keep refs in sync during render so buttons work immediately after loading data
   supplierGroupsRef.current = supplierGroups;
   fuzzyApprovedAliasesRef.current = fuzzyApprovedAliases;
+
+  // Auto-apply supplier alias mapping whenever the user changes merge toggles or chosen display
+  useEffect(() => {
+    setSupplierAliasMap(buildSupplierAliasMap(supplierGroups, fuzzyApprovedAliases));
+  }, [supplierGroups, fuzzyApprovedAliases]);
 
   useEffect(() => {
     const onDoc = (e: MouseEvent) => {
@@ -831,17 +846,14 @@ export default function DashboardSuppliers() {
   const hasData = rows.length > 0;
 
   // Conciliación: apply helpers
-  function applyAliasesNow(updatedGroups?: SupplierGroup[], updatedFuzzyApproved?: Record<string, string>) {
-    const groupsToUse = updatedGroups ?? supplierGroupsRef.current;
-    const fuzzyApprovedToUse = updatedFuzzyApproved ?? fuzzyApprovedAliasesRef.current;
-
+  function applyAliasesNow() {
     // Ensure user sees the effect immediately
     setSupplierUnifyEnabled(true);
 
-    setSupplierAliasMap(buildSupplierAliasMap(groupsToUse, fuzzyApprovedToUse));
-
     // Avoid getting stuck with old Supplier selections
     setFixedFilters((s) => ({ ...s, Supplier: [] }));
+
+    showToast("Cambios aplicados ✅");
   }
 
   // UPGRADE 2: apply all suggested merges
@@ -854,7 +866,9 @@ export default function DashboardSuppliers() {
     }));
 
     setSupplierGroups(updated);
-    applyAliasesNow(updated, fuzzyApprovedAliasesRef.current);
+    setSupplierUnifyEnabled(true);
+    setFixedFilters((s) => ({ ...s, Supplier: [] }));
+    showToast("Merges sugeridos aplicados ✅");
   }
 
   // UPGRADE 3: approve fuzzy suggestion -> crea alias manual (a y b -> chosenDisplay)
@@ -864,7 +878,10 @@ export default function DashboardSuppliers() {
       prev.map((x) => (x.a === s.a && x.b === s.b && x.score === s.score ? { ...x, approved } : x))
     );
 
-    if (!approved) return;
+    if (!approved) {
+      showToast("Marcado como separado ✅");
+      return;
+    }
 
     const aliasUpdates: Record<string, string> = {
       ...fuzzyApprovedAliasesRef.current,
@@ -873,7 +890,9 @@ export default function DashboardSuppliers() {
     };
 
     setFuzzyApprovedAliases(aliasUpdates);
-    applyAliasesNow(supplierGroupsRef.current, aliasUpdates);
+    setSupplierUnifyEnabled(true);
+    setFixedFilters((s0) => ({ ...s0, Supplier: [] }));
+    showToast("Unificación fuzzy aplicada ✅");
   }
 
   // Recalcular conciliación
@@ -884,8 +903,9 @@ export default function DashboardSuppliers() {
     const fuzzy = buildFuzzySuggestions(rows, supplierCol, 40);
     setSupplierGroups(groups);
     setFuzzySuggestions(fuzzy);
-    // mantenemos aprobaciones fuzzy existentes
-    applyAliasesNow(groups, fuzzyApprovedAliasesRef.current);
+    setSupplierUnifyEnabled(true);
+    setFixedFilters((s) => ({ ...s, Supplier: [] }));
+    showToast("Recalculado ✅");
   }
 
   const supplierGroupsFiltered = useMemo(() => {
@@ -900,6 +920,11 @@ export default function DashboardSuppliers() {
 
   return (
     <div className="min-h-screen bg-slate-50">
+      {toast ? (
+        <div className="pointer-events-none fixed left-1/2 top-4 z-[999] -translate-x-1/2 rounded-xl bg-slate-900 px-4 py-2 text-sm font-semibold text-white shadow-lg">
+          {toast}
+        </div>
+      ) : null}
       {/* Top bar */}
       <div className="border-b border-slate-200 bg-white/90 backdrop-blur">
         <div className="mx-auto w-full max-w-none px-4 py-4 sm:px-6 lg:px-10 2xl:px-14">
