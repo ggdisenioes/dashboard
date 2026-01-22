@@ -503,6 +503,18 @@ export default function DashboardSuppliers() {
   const [fuzzySuggestions, setFuzzySuggestions] = useState<FuzzySuggestion[]>([]);
   const [fuzzyApprovedAliases, setFuzzyApprovedAliases] = useState<Record<string, string>>({});
 
+  // Keep latest values to avoid stale closures in click handlers
+  const supplierGroupsRef = useRef<SupplierGroup[]>([]);
+  const fuzzyApprovedAliasesRef = useRef<Record<string, string>>({});
+
+  useEffect(() => {
+    supplierGroupsRef.current = supplierGroups;
+  }, [supplierGroups]);
+
+  useEffect(() => {
+    fuzzyApprovedAliasesRef.current = fuzzyApprovedAliases;
+  }, [fuzzyApprovedAliases]);
+
   useEffect(() => {
     const onDoc = (e: MouseEvent) => {
       if (!addRef.current) return;
@@ -823,41 +835,48 @@ export default function DashboardSuppliers() {
 
   // Conciliación: apply helpers
   function applyAliasesNow(updatedGroups?: SupplierGroup[], updatedFuzzyApproved?: Record<string, string>) {
-    const groupsToUse = updatedGroups ?? supplierGroups;
-    const fuzzyApprovedToUse = updatedFuzzyApproved ?? fuzzyApprovedAliases;
+    const groupsToUse = updatedGroups ?? supplierGroupsRef.current;
+    const fuzzyApprovedToUse = updatedFuzzyApproved ?? fuzzyApprovedAliasesRef.current;
+
+    // Ensure user sees the effect immediately
+    setSupplierUnifyEnabled(true);
+
     setSupplierAliasMap(buildSupplierAliasMap(groupsToUse, fuzzyApprovedToUse));
-    // evita quedar con selección vieja
+
+    // Avoid getting stuck with old Supplier selections
     setFixedFilters((s) => ({ ...s, Supplier: [] }));
   }
 
   // UPGRADE 2: apply all suggested merges
   function applyAllSuggestedMerges() {
-    const updated = supplierGroups.map((g) => ({
+    const base = supplierGroupsRef.current;
+    const updated = base.map((g) => ({
       ...g,
       merge: true,
       chosenDisplay: g.suggestedDisplay,
     }));
+
     setSupplierGroups(updated);
-    applyAliasesNow(updated, fuzzyApprovedAliases);
+    applyAliasesNow(updated, fuzzyApprovedAliasesRef.current);
   }
 
   // UPGRADE 3: approve fuzzy suggestion -> crea alias manual (a y b -> chosenDisplay)
   function approveFuzzy(s: FuzzySuggestion, approved: boolean) {
-    const updated = fuzzySuggestions.map((x) => {
-      if (x.a === s.a && x.b === s.b && x.score === s.score) return { ...x, approved };
-      return x;
-    });
-    setFuzzySuggestions(updated);
+    // Update UI state
+    setFuzzySuggestions((prev) =>
+      prev.map((x) => (x.a === s.a && x.b === s.b && x.score === s.score ? { ...x, approved } : x))
+    );
 
-    if (approved) {
-      const aliasUpdates: Record<string, string> = {
-        ...fuzzyApprovedAliases,
-        [s.a]: s.chosenDisplay,
-        [s.b]: s.chosenDisplay,
-      };
-      setFuzzyApprovedAliases(aliasUpdates);
-      applyAliasesNow(supplierGroups, aliasUpdates);
-    }
+    if (!approved) return;
+
+    const aliasUpdates: Record<string, string> = {
+      ...fuzzyApprovedAliasesRef.current,
+      [s.a]: s.chosenDisplay,
+      [s.b]: s.chosenDisplay,
+    };
+
+    setFuzzyApprovedAliases(aliasUpdates);
+    applyAliasesNow(supplierGroupsRef.current, aliasUpdates);
   }
 
   // Recalcular conciliación
@@ -869,7 +888,7 @@ export default function DashboardSuppliers() {
     setSupplierGroups(groups);
     setFuzzySuggestions(fuzzy);
     // mantenemos aprobaciones fuzzy existentes
-    applyAliasesNow(groups, fuzzyApprovedAliases);
+    applyAliasesNow(groups, fuzzyApprovedAliasesRef.current);
   }
 
   const supplierGroupsFiltered = useMemo(() => {
