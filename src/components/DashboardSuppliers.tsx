@@ -598,11 +598,15 @@ export default function DashboardSuppliers() {
 
   // Keep latest values to avoid stale closures in click handlers
   const supplierGroupsRef = useRef<SupplierGroup[]>([]);
+  const fuzzySuggestionsRef = useRef<FuzzySuggestion[]>([]);
   const fuzzyApprovedAliasesRef = useRef<Record<string, string>>({});
+  const supplierGroupOverridesRef = useRef<Record<string, SupplierGroupOverride>>({});
 
   // IMPORTANT: keep refs in sync during render so buttons work immediately after loading data
   supplierGroupsRef.current = supplierGroups;
+  fuzzySuggestionsRef.current = fuzzySuggestions;
   fuzzyApprovedAliasesRef.current = fuzzyApprovedAliases;
+  supplierGroupOverridesRef.current = supplierGroupOverrides;
 
   // Auto-apply supplier alias mapping whenever the user changes merge toggles or chosen display
   useEffect(() => {
@@ -643,24 +647,35 @@ export default function DashboardSuppliers() {
     showToast("Sesión borrada ✅");
   }
 
-  function applyOverridesToGroups(groups: SupplierGroup[]) {
+  function applyOverridesToGroups(
+    groups: SupplierGroup[],
+    overrides?: Record<string, SupplierGroupOverride>
+  ) {
+    const ovs = overrides ?? supplierGroupOverridesRef.current;
     return groups.map((g) => {
-      const ov = supplierGroupOverrides[g.key];
+      const ov = ovs[g.key];
       if (!ov) return g;
       return { ...g, merge: ov.merge, chosenDisplay: ov.chosenDisplay };
     });
   }
 
-  function recomputeSupplierStuff(allRows: Row[], supplierCol: string | null) {
+  function recomputeSupplierStuff(
+    allRows: Row[],
+    supplierCol: string | null,
+    overrides?: Record<string, SupplierGroupOverride>,
+    fuzzyApproved?: Record<string, string>
+  ) {
     const rawGroups = buildSupplierGroups(allRows, supplierCol);
-    const groups = applyOverridesToGroups(rawGroups);
+    const groups = applyOverridesToGroups(rawGroups, overrides);
     setSupplierGroups(groups);
 
     const fuzzy = buildFuzzySuggestions(allRows, supplierCol, 40);
     setFuzzySuggestions(fuzzy);
 
+    const fuzzyMap = fuzzyApproved ?? fuzzyApprovedAliasesRef.current;
+
     // Alias final (grupos + fuzzy aprobados)
-    setSupplierAliasMap(buildSupplierAliasMap(groups, fuzzyApprovedAliasesRef.current));
+    setSupplierAliasMap(buildSupplierAliasMap(groups, fuzzyMap));
     setSupplierUnifyEnabled(true);
   }
 
@@ -973,8 +988,9 @@ export default function DashboardSuppliers() {
     showToast("Cambios aplicados ✅");
   }
 
-  // UPGRADE 2: apply all suggested merges
+  // UPGRADE 2: apply all suggested merges (and fuzzy suggestions)
   function applyAllSuggestedMerges() {
+    // (A) Exact groups
     const base = supplierGroupsRef.current;
     const updated = base.map((g) => ({
       ...g,
@@ -989,9 +1005,23 @@ export default function DashboardSuppliers() {
       return next;
     });
 
+    // (B) Fuzzy suggestions (auto-approve all pending)
+    const fuzzies = fuzzySuggestionsRef.current;
+    const pending = fuzzies.filter((s) => s.approved === null);
+    if (pending.length) {
+      const aliasUpdates: Record<string, string> = { ...fuzzyApprovedAliasesRef.current };
+      for (const s of pending) {
+        aliasUpdates[s.a] = s.chosenDisplay;
+        aliasUpdates[s.b] = s.chosenDisplay;
+      }
+      setFuzzyApprovedAliases(aliasUpdates);
+      setFuzzySuggestions((prev) => prev.map((s) => (s.approved === null ? { ...s, approved: true } : s)));
+    }
+
     setSupplierUnifyEnabled(true);
     setFixedFilters((s) => ({ ...s, Supplier: [] }));
-    showToast("Merges sugeridos aplicados ✅");
+
+    showToast(`Aplicado ✅ ${updated.length} grupos + ${pending.length} fuzzy`);
   }
   // --- IndexedDB hydration on mount ---
   useEffect(() => {
@@ -1019,10 +1049,13 @@ export default function DashboardSuppliers() {
         // Rebuild groups + fuzzy from rows and apply overrides
         const supplierCol = (snap.mapping?.Supplier ?? null) as string | null;
         if (snap.rows && snap.rows.length) {
-          // recompute will apply overrides and build alias map
-          // defer to next tick to ensure overrides are in state
           setTimeout(() => {
-            recomputeSupplierStuff(snap.rows, supplierCol);
+            recomputeSupplierStuff(
+              snap.rows,
+              supplierCol,
+              snap.supplierGroupOverrides ?? {},
+              snap.fuzzyApprovedAliases ?? {}
+            );
           }, 0);
         }
 
@@ -1109,10 +1142,7 @@ export default function DashboardSuppliers() {
   function recalcAll() {
     if (!hasData) return;
     const supplierCol = mapping.Supplier;
-    const groups = buildSupplierGroups(rows, supplierCol);
-    const fuzzy = buildFuzzySuggestions(rows, supplierCol, 40);
-    setSupplierGroups(groups);
-    setFuzzySuggestions(fuzzy);
+    recomputeSupplierStuff(rows, supplierCol);
     setSupplierUnifyEnabled(true);
     setFixedFilters((s) => ({ ...s, Supplier: [] }));
     showToast("Recalculado ✅");
