@@ -88,6 +88,22 @@ import {
   CartesianGrid,
 } from "recharts";
 
+// Twinco branding colors and logo
+const BRAND = {
+  navy: "#030F33",
+  neon: "#74F9C0",
+  softGrey: "#C5C6C7",
+  lightGrey: "#F7F7F7",
+  white: "#FFFFFF",
+  softBlue: "#78A8E4",
+  skyBlue: "#4580E0",
+  electricBlue: "#002196",
+  darkBlue: "#001469",
+};
+
+// Put the logo file in /public with this exact name.
+const HEADER_LOGO_SRC = "/LogotipoTwinco_Negativo.png";
+
 /**
  * Dashboard Suppliers
  * - Carga múltiples CSV/XLSX (se unifican en un solo dataset)
@@ -413,15 +429,28 @@ function MultiSelect({
   selected,
   onChange,
   placeholder = "Seleccionar…",
+  searchable = true,
 }: {
   label: string;
   options: string[];
   selected: string[];
   onChange: (v: string[]) => void;
   placeholder?: string;
+  searchable?: boolean;
 }) {
   const [open, setOpen] = useState(false);
+  const [q, setQ] = useState("");
   const ref = useRef<HTMLDivElement | null>(null);
+
+  const filteredOptions = useMemo(() => {
+    const qq = q.trim().toLowerCase();
+    if (!searchable || !qq) return options;
+    return options.filter((o) => o.toLowerCase().includes(qq));
+  }, [options, q, searchable]);
+
+  useEffect(() => {
+    if (!open) setQ("");
+  }, [open]);
 
   useEffect(() => {
     const onDoc = (e: MouseEvent) => {
@@ -453,11 +482,22 @@ function MultiSelect({
 
       {open ? (
         <div className="absolute z-50 mt-2 w-full overflow-hidden rounded-xl border border-slate-200 bg-white shadow-lg">
+          {searchable ? (
+            <div className="border-b border-slate-100 p-2">
+              <input
+                value={q}
+                onChange={(e) => setQ(e.target.value)}
+                placeholder="Buscar…"
+                className="w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm shadow-sm focus:border-slate-300 focus:outline-none"
+              />
+            </div>
+          ) : null}
+
           <div className="max-h-64 overflow-auto p-2">
-            {options.length === 0 ? (
-              <div className="p-3 text-sm text-slate-500">Sin opciones</div>
+            {filteredOptions.length === 0 ? (
+              <div className="p-3 text-sm text-slate-500">Sin resultados</div>
             ) : (
-              options.map((o) => (
+              filteredOptions.map((o) => (
                 <label key={o} className="flex cursor-pointer items-center gap-2 rounded-lg px-2 py-2 text-sm hover:bg-slate-50">
                   <input
                     type="checkbox"
@@ -577,6 +617,8 @@ export default function DashboardSuppliers() {
 
   // UX: hide resolved merges by default
   const [showResolvedReconciliation, setShowResolvedReconciliation] = useState(false);
+  // UX: reconciliation compact/expand
+  const [reconcileOpen, setReconcileOpen] = useState(false);
 
   // UPGRADE 3: fuzzy suggestions + aprobaciones (manual aliases)
   const [fuzzySuggestions, setFuzzySuggestions] = useState<FuzzySuggestion[]>([]);
@@ -592,6 +634,10 @@ export default function DashboardSuppliers() {
   // UI feedback
   const [toast, setToast] = useState<string | null>(null);
   const toastTimerRef = useRef<number | null>(null);
+
+  // Preview pagination (table)
+  const [previewPage, setPreviewPage] = useState(1);
+  const [previewPageSize, setPreviewPageSize] = useState(30);
 
   function showToast(msg: string) {
     setToast(msg);
@@ -650,6 +696,7 @@ export default function DashboardSuppliers() {
     showToast("Sesión borrada ✅");
   }
 
+  
   function applyOverridesToGroups(
     groups: SupplierGroup[],
     overrides?: Record<string, SupplierGroupOverride>
@@ -892,6 +939,24 @@ export default function DashboardSuppliers() {
 
     return out;
   }, [rows, mapping, fixedFilters, dynamicFilters, turnoverRange, supplierAliasMap, supplierUnifyEnabled]);
+
+  // Reset page when filters change
+  useEffect(() => {
+    setPreviewPage(1);
+  }, [fixedFilters, dynamicFilters]);
+
+  const previewTotalPages = useMemo(() => {
+    return Math.max(1, Math.ceil(filteredRows.length / previewPageSize));
+  }, [filteredRows.length, previewPageSize]);
+
+  useEffect(() => {
+    // Clamp page if dataset shrinks
+    setPreviewPage((p) => Math.min(Math.max(1, p), previewTotalPages));
+  }, [previewTotalPages]);
+
+  const previewFrom = (previewPage - 1) * previewPageSize;
+  const previewTo = Math.min(filteredRows.length, previewFrom + previewPageSize);
+  const previewRows = filteredRows.slice(previewFrom, previewTo);
 
   // KPIs + aggregations
   const kpis = useMemo(() => {
@@ -1151,6 +1216,21 @@ export default function DashboardSuppliers() {
     showToast("Recalculado ✅");
   }
 
+  const reconcileCounts = useMemo(() => {
+    const pendingGroups = supplierGroups.filter((g) => !g.merge).length;
+    const resolvedGroups = supplierGroups.filter((g) => g.merge).length;
+    const pendingFuzzy = fuzzySuggestions.filter((s) => s.approved === null).length;
+    const resolvedFuzzy = fuzzySuggestions.filter((s) => s.approved !== null).length;
+    return { pendingGroups, resolvedGroups, pendingFuzzy, resolvedFuzzy };
+  }, [supplierGroups, fuzzySuggestions]);
+
+  useEffect(() => {
+    // Auto-minimize when everything is resolved
+    if (reconcileCounts.pendingGroups === 0 && reconcileCounts.pendingFuzzy === 0) {
+      setReconcileOpen(false);
+    }
+  }, [reconcileCounts.pendingGroups, reconcileCounts.pendingFuzzy]);
+
   const supplierGroupsFiltered = useMemo(() => {
     const q = supplierGroupSearch.trim().toLowerCase();
 
@@ -1166,25 +1246,39 @@ export default function DashboardSuppliers() {
   }, [supplierGroups, supplierGroupSearch, showResolvedReconciliation]);
 
   return (
-    <div className="min-h-screen bg-slate-50">
+    <div className="min-h-screen" style={{ background: BRAND.lightGrey }}>
       {toast ? (
         <div className="pointer-events-none fixed left-1/2 top-4 z-[999] -translate-x-1/2 rounded-xl bg-slate-900 px-4 py-2 text-sm font-semibold text-white shadow-lg">
           {toast}
         </div>
       ) : null}
       {/* Top bar */}
-      <div className="border-b border-slate-200 bg-white/90 backdrop-blur">
-        <div className="mx-auto w-full max-w-none px-4 py-4 sm:px-6 lg:px-10 2xl:px-14">
-          <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
+      <div className="border-b" style={{ borderColor: BRAND.darkBlue, background: BRAND.navy }}>
+        <div className="mx-auto w-full max-w-none px-4 py-12 sm:px-6 lg:px-10 2xl:px-14">
+          <div className="grid grid-cols-1 gap-3 md:grid-cols-3 md:items-center">
             <div>
-              <div className="text-lg font-semibold text-slate-900">Dashboard de Suppliers</div>
-              <div className="text-xs text-slate-600">
+              <div className="text-sm font-semibold text-white/90 tracking-wide">SUPPLIERS DASHBOARD</div>
+              <div className="mt-1 text-xs text-white/70">
                 Cargá uno o varios CSV/XLSX. Supplier se reconcilia (variantes + fuzzy). Exporta resultados filtrados.
               </div>
             </div>
 
-            <div className="flex flex-wrap items-center gap-3">
-              <label className="inline-flex cursor-pointer items-center gap-2 rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm shadow-sm hover:border-slate-300">
+            {/* Center logo */}
+            <div className="flex justify-center">
+              <div className="flex items-center justify-center">
+                <img
+                  src={HEADER_LOGO_SRC}
+                  alt="Twinco Capital"
+                  className="h-20 md:h-28 lg:h-32 w-auto object-contain"
+                />
+              </div>
+            </div>
+
+            <div className="flex flex-wrap items-center justify-start gap-3 md:justify-end">
+              <label
+                className="inline-flex cursor-pointer items-center gap-2 rounded-xl border px-3 py-2 text-sm shadow-sm"
+                style={{ borderColor: "rgba(255,255,255,0.18)", background: "rgba(255,255,255,0.06)" }}
+              >
                 <input
                   type="file"
                   accept=".xlsx,.xls,.csv"
@@ -1195,13 +1289,14 @@ export default function DashboardSuppliers() {
                     if (fl && fl.length) loadFiles(fl);
                   }}
                 />
-                <span className="text-slate-700">📁 Cargar archivo(s)</span>
+                <span className="text-white/90">📁 Cargar archivo(s)</span>
               </label>
 
               {hasSavedSession ? (
                 <button
                   type="button"
-                  className="rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm font-semibold text-slate-800 shadow-sm hover:border-slate-300"
+                  className="rounded-xl border px-3 py-2 text-sm font-semibold shadow-sm"
+                  style={{ borderColor: "rgba(255,255,255,0.18)", background: "rgba(255,255,255,0.06)", color: "rgba(255,255,255,0.9)" }}
                   onClick={clearSavedSession}
                   title="Borra la sesión guardada (datos + decisiones)"
                 >
@@ -1211,7 +1306,8 @@ export default function DashboardSuppliers() {
 
               <button
                 type="button"
-                className="rounded-xl bg-slate-900 px-3 py-2 text-sm font-semibold text-white hover:bg-slate-800 disabled:opacity-50"
+                className="rounded-xl px-3 py-2 text-sm font-semibold disabled:opacity-50"
+                style={{ background: BRAND.neon, color: BRAND.navy }}
                 disabled={!hasData || filteredRows.length === 0}
                 onClick={exportFilteredToExcel}
                 title={!hasData ? "Cargá archivos" : filteredRows.length === 0 ? "No hay filas para exportar" : "Exportar filtrado"}
@@ -1221,21 +1317,34 @@ export default function DashboardSuppliers() {
 
               {hasData ? (
                 <>
-                  <Pill>{formatCompact(filteredRows.length)} / {formatCompact(rows.length)} filas</Pill>
-                  <Pill>{filesLoaded} archivo(s)</Pill>
-                  {hasSavedSession ? <Pill>Sesión guardada</Pill> : null}
+                  <span className="inline-flex items-center rounded-full px-2.5 py-1 text-xs font-medium shadow-sm" style={{ background: "rgba(255,255,255,0.08)", color: "rgba(255,255,255,0.85)", border: "1px solid rgba(255,255,255,0.14)" }}>
+                    {formatCompact(filteredRows.length)} / {formatCompact(rows.length)} filas
+                  </span>
+                  <span className="inline-flex items-center rounded-full px-2.5 py-1 text-xs font-medium shadow-sm" style={{ background: "rgba(255,255,255,0.08)", color: "rgba(255,255,255,0.85)", border: "1px solid rgba(255,255,255,0.14)" }}>
+                    {filesLoaded} archivo(s)
+                  </span>
+                  {hasSavedSession ? (
+                    <span className="inline-flex items-center rounded-full px-2.5 py-1 text-xs font-medium shadow-sm" style={{ background: "rgba(255,255,255,0.08)", color: "rgba(255,255,255,0.85)", border: "1px solid rgba(255,255,255,0.14)" }}>
+                      Sesión guardada
+                    </span>
+                  ) : null}
                 </>
               ) : (
-                <Pill>Sin archivo</Pill>
+                <span className="inline-flex items-center rounded-full px-2.5 py-1 text-xs font-medium shadow-sm" style={{ background: "rgba(255,255,255,0.08)", color: "rgba(255,255,255,0.85)", border: "1px solid rgba(255,255,255,0.14)" }}>
+                  Sin archivo
+                </span>
               )}
             </div>
           </div>
         </div>
       </div>
 
-      {/* Filters (sticky) */}
-      <div className="sticky top-0 z-40 border-b border-slate-200 bg-white/90 backdrop-blur">
-        <div className="mx-auto w-full max-w-none px-4 py-4 sm:px-6 lg:px-10 2xl:px-14">
+      {/* Spacer to keep filters lower under the large header */}
+      <div className="h-12" style={{ background: BRAND.lightGrey }} />
+
+      {/* Filters */}
+      <div className="border-b" style={{ borderColor: BRAND.softGrey, background: "rgba(255,255,255,0.92)", backdropFilter: "blur(8px)" }}>
+        <div className="mx-auto w-full max-w-none px-4 py-9 sm:px-6 lg:px-10 2xl:px-14">
           <div className="grid grid-cols-1 gap-3 md:grid-cols-6">
             <MultiSelect
               label="Buyer"
@@ -1418,10 +1527,16 @@ export default function DashboardSuppliers() {
           </div>
         ) : (
           <div className="grid grid-cols-1 gap-6">
-            {/* Reconciliación */}
-            <Card
-              title="Unificación de Suppliers (reconciliación)"
-              right={
+            {/* Reconciliación (compacto) */}
+            <div className="rounded-2xl border border-slate-200 bg-white shadow-sm">
+              <div className="flex flex-col gap-3 border-b border-slate-100 px-5 py-4 md:flex-row md:items-center md:justify-between">
+                <div className="flex flex-wrap items-center gap-2">
+                  <div className="text-sm font-semibold text-slate-800">Unificación de Suppliers</div>
+                  <Pill>Pendientes: {reconcileCounts.pendingGroups} grupos</Pill>
+                  <Pill>Pendientes fuzzy: {reconcileCounts.pendingFuzzy}</Pill>
+                  {reconcileCounts.pendingGroups === 0 && reconcileCounts.pendingFuzzy === 0 ? <Pill>✅ Todo conciliado</Pill> : null}
+                </div>
+
                 <div className="flex flex-wrap items-center gap-3">
                   <label className="flex items-center gap-2 text-xs text-slate-600">
                     <input
@@ -1430,17 +1545,9 @@ export default function DashboardSuppliers() {
                       onChange={(e) => setSupplierUnifyEnabled(e.target.checked)}
                       className="h-4 w-4 rounded border-slate-300"
                     />
-                    Activar unificación en dashboard
+                    Unificación en dashboard
                   </label>
-                  <label className="flex items-center gap-2 text-xs text-slate-600">
-                    <input
-                      type="checkbox"
-                      checked={showResolvedReconciliation}
-                      onChange={(e) => setShowResolvedReconciliation(e.target.checked)}
-                      className="h-4 w-4 rounded border-slate-300"
-                    />
-                    Mostrar resueltos
-                  </label>
+
                   <button
                     type="button"
                     className="rounded-xl border border-slate-200 bg-white px-3 py-2 text-xs font-semibold text-slate-800 hover:border-slate-300"
@@ -1448,246 +1555,269 @@ export default function DashboardSuppliers() {
                   >
                     Recalcular
                   </button>
+
                   <button
                     type="button"
                     className="rounded-xl bg-slate-900 px-3 py-2 text-xs font-semibold text-white hover:bg-slate-800"
                     onClick={applyAllSuggestedMerges}
-                    title="Marca todos los grupos como merge=true y aplica el nombre sugerido"
+                    title="Aplica grupos exactos + fuzzy pendientes"
                   >
-                    Apply all suggested merges
+                    Aplicar sugeridos
                   </button>
+
+                  {(reconcileCounts.pendingGroups > 0 || reconcileCounts.pendingFuzzy > 0 || showResolvedReconciliation) ? (
+                    <button
+                      type="button"
+                      className="rounded-xl border border-slate-200 bg-white px-3 py-2 text-xs font-semibold text-slate-800 hover:border-slate-300"
+                      onClick={() => setReconcileOpen((s) => !s)}
+                    >
+                      {reconcileOpen ? "Minimizar" : "Revisar"}
+                    </button>
+                  ) : null}
                 </div>
-              }
-            >
-              {!mapping.Supplier ? (
-                <div className="text-sm text-slate-600">No se encontró la cabecera “Supplier”.</div>
-              ) : (
-                <>
-                  {/* UPGRADE 1: search */}
-                  <div className="mb-3 flex flex-col gap-2 md:flex-row md:items-center md:justify-between">
-                    <div className="text-xs text-slate-600">
-                      Revisá y autorizá merges exactos (canonicalKey) y sugerencias fuzzy.
-                    </div>
-                    <input
-                      value={supplierGroupSearch}
-                      onChange={(e) => setSupplierGroupSearch(e.target.value)}
-                      placeholder="Buscar supplier / variante…"
-                      className="w-full md:w-80 rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm shadow-sm"
-                    />
-                  </div>
+              </div>
 
-                  {/* Grupos exactos */}
-                  <div className="mb-3 flex flex-wrap items-center justify-between gap-2 rounded-xl border border-slate-200 bg-white px-3 py-2 text-xs text-slate-600">
-                    <div className="flex flex-wrap items-center gap-2">
-                      <Pill>Pendientes: {supplierGroups.filter((g) => !g.merge).length} grupos</Pill>
-                      <Pill>Resueltos: {supplierGroups.filter((g) => g.merge).length} grupos</Pill>
-                      <Pill>Pendientes fuzzy: {fuzzySuggestions.filter((s) => s.approved === null).length}</Pill>
-                    </div>
-                    <div className="text-slate-500">Tip: por defecto se ocultan los resueltos.</div>
-                  </div>
-                  <div className="space-y-3">
-                    {supplierGroupsFiltered.length === 0 ? (
-                      <div className="text-sm text-slate-600">No hay grupos que coincidan con la búsqueda.</div>
-                    ) : (
-                      supplierGroupsFiltered.slice(0, 12).map((g) => {
-                        const total = g.variants.reduce((s, v) => s + v.count, 0);
-                        return (
-                          <div key={g.key} className="rounded-xl border border-slate-200 bg-slate-50 p-4">
-                            <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
-                              <div>
-                                <div className="text-sm font-semibold text-slate-900">
-                                  {g.chosenDisplay}
-                                  <span className="ml-2 text-xs font-medium text-slate-500">({total} registros)</span>
-                                </div>
-                                <div className="mt-1 flex flex-wrap gap-2">
-                                  {g.variants.slice(0, 8).map((v) => (
-                                    <Pill key={v.name}>
-                                      {v.name} · {v.count}
-                                    </Pill>
-                                  ))}
-                                  {g.variants.length > 8 ? <Pill>+{g.variants.length - 8} más</Pill> : null}
-                                </div>
-                              </div>
-
-                              <div className="flex flex-col gap-2 md:items-end">
-                                <label className="flex items-center gap-2 text-sm text-slate-700">
-                                  <input
-                                    type="checkbox"
-                                    checked={g.merge}
-                                    onChange={(e) => {
-                                      const merge = e.target.checked;
-                                      const updated = supplierGroups.map((x) => (x.key === g.key ? { ...x, merge } : x));
-                                      setSupplierGroups(updated);
-                                      setSupplierGroupOverrides((prev) => ({
-                                        ...prev,
-                                        [g.key]: { merge, chosenDisplay: (prev[g.key]?.chosenDisplay ?? g.chosenDisplay) },
-                                      }));
-                                      showToast("Actualizado en tiempo real ✅");
-                                    }}
-                                    className="h-4 w-4 rounded border-slate-300"
-                                  />
-                                  Unificar este grupo
-                                </label>
-
-                                <div className="flex items-center gap-2">
-                                  <span className="text-xs text-slate-600">Nombre unificado:</span>
-                                  <select
-                                    value={g.chosenDisplay}
-                                    onChange={(e) => {
-                                      const chosenDisplay = e.target.value;
-                                      const updated = supplierGroups.map((x) => (x.key === g.key ? { ...x, chosenDisplay } : x));
-                                      setSupplierGroups(updated);
-                                      setSupplierGroupOverrides((prev) => ({
-                                        ...prev,
-                                        [g.key]: { merge: (prev[g.key]?.merge ?? g.merge), chosenDisplay },
-                                      }));
-                                      showToast("Actualizado en tiempo real ✅");
-                                    }}
-                                    className="rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm shadow-sm"
-                                  >
-                                    {g.variants.map((v) => (
-                                      <option key={v.name} value={v.name}>
-                                        {v.name}
-                                      </option>
-                                    ))}
-                                  </select>
-                                </div>
-
-                                <button
-                                  type="button"
-                                  className="rounded-xl bg-slate-900 px-3 py-2 text-xs font-semibold text-white hover:bg-slate-800"
-                                  onClick={() => applyAliasesNow()}
-                                >
-                                  Guardar (ya es en vivo)
-                                </button>
-                              </div>
-                            </div>
-                          </div>
-                        );
-                      })
-                    )}
-
-                    {supplierGroupsFiltered.length > 12 ? (
-                      <div className="text-xs text-slate-500">Mostrando 12 grupos (búsqueda reduce lista).</div>
-                    ) : null}
-                  </div>
-
-                  {/* UPGRADE 3: fuzzy suggestions */}
-                  <div className="mt-6">
-                    <div className="mb-2 text-sm font-semibold text-slate-900">Sugerencias fuzzy (posibles duplicados)</div>
-                    <div className="text-xs text-slate-600 mb-3">
-                      Estos pares no cayeron en el mismo grupo exacto, pero son muy similares. Aprobá “Unificar” o “Separar”.
-                    </div>
-
-                    {(
-                      showResolvedReconciliation
-                        ? fuzzySuggestions
-                        : fuzzySuggestions.filter((s) => s.approved === null)
-                    ).length === 0 ? (
-                      <div className="text-sm text-slate-600">No hay sugerencias fuzzy pendientes.</div>
-                    ) : (
-                      <div className="space-y-2">
-                        {(showResolvedReconciliation
-                          ? fuzzySuggestions
-                          : fuzzySuggestions.filter((s) => s.approved === null)
-                        ).map((s, idx) => (
-                          <div key={`${s.a}-${s.b}-${idx}`} className="rounded-xl border border-slate-200 bg-white p-4">
-                            <div className="flex flex-col gap-2 md:flex-row md:items-center md:justify-between">
-                              <div>
-                                <div className="text-sm font-semibold text-slate-900">
-                                  {s.a} <span className="text-slate-400">≈</span> {s.b}
-                                </div>
-                                <div className="mt-1 text-xs text-slate-600">
-                                  Score: <span className="font-semibold">{(s.score * 100).toFixed(1)}%</span>
-                                </div>
-                              </div>
-
-                              <div className="flex flex-wrap items-center gap-2">
-                                <span className="text-xs text-slate-600">Nombre unificado:</span>
-                                <select
-                                  value={s.chosenDisplay}
-                                  onChange={(e) => {
-                                    const chosenDisplay = e.target.value;
-                                    setFuzzySuggestions((prev) =>
-                                      prev.map((x) =>
-                                        x.a === s.a && x.b === s.b && x.score === s.score ? { ...x, chosenDisplay } : x
-                                      )
-                                    );
-                                  }}
-                                  className="rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm shadow-sm"
-                                >
-                                  {[s.a, s.b].map((v) => (
-                                    <option key={v} value={v}>
-                                      {v}
-                                    </option>
-                                  ))}
-                                </select>
-
-                                <button
-                                  type="button"
-                                  className={classNames(
-                                    "rounded-xl px-3 py-2 text-xs font-semibold",
-                                    s.approved === true ? "bg-slate-900 text-white" : "border border-slate-200 bg-white text-slate-800 hover:border-slate-300"
-                                  )}
-                                  onClick={() => approveFuzzy(s, true)}
-                                >
-                                  Unificar
-                                </button>
-
-                                <button
-                                  type="button"
-                                  className={classNames(
-                                    "rounded-xl px-3 py-2 text-xs font-semibold",
-                                    s.approved === false ? "bg-slate-200 text-slate-900" : "border border-slate-200 bg-white text-slate-800 hover:border-slate-300"
-                                  )}
-                                  onClick={() => approveFuzzy(s, false)}
-                                >
-                                  Separar
-                                </button>
-                              </div>
-                            </div>
-                          </div>
-                        ))}
+              {reconcileOpen ? (
+                <div className="p-5">
+                  {!mapping.Supplier ? (
+                    <div className="text-sm text-slate-600">No se encontró la cabecera “Supplier”.</div>
+                  ) : (
+                    <>
+                      <div className="mb-4 flex flex-col gap-2 md:flex-row md:items-center md:justify-between">
+                        <div className="text-xs text-slate-600">Revisá y autorizá merges exactos y sugerencias fuzzy.</div>
+                        <div className="flex flex-wrap items-center gap-3">
+                          <label className="flex items-center gap-2 text-xs text-slate-600">
+                            <input
+                              type="checkbox"
+                              checked={showResolvedReconciliation}
+                              onChange={(e) => setShowResolvedReconciliation(e.target.checked)}
+                              className="h-4 w-4 rounded border-slate-300"
+                            />
+                            Mostrar resueltos
+                          </label>
+                          <input
+                            value={supplierGroupSearch}
+                            onChange={(e) => setSupplierGroupSearch(e.target.value)}
+                            placeholder="Buscar supplier / variante…"
+                            className="w-full md:w-80 rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm shadow-sm"
+                          />
+                        </div>
                       </div>
-                    )}
 
-                    {Object.keys(fuzzyApprovedAliases).length > 0 ? (
-                      <div className="mt-3 text-xs text-slate-500">
-                        Aprobaciones fuzzy activas: {Object.keys(fuzzyApprovedAliases).length} alias(es).
+                      <div className="mb-3 flex flex-wrap items-center gap-2 rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-xs text-slate-600">
+                        <Pill>Pendientes: {reconcileCounts.pendingGroups} grupos</Pill>
+                        <Pill>Resueltos: {reconcileCounts.resolvedGroups} grupos</Pill>
+                        <Pill>Pendientes fuzzy: {reconcileCounts.pendingFuzzy}</Pill>
+                        <Pill>Resueltos fuzzy: {reconcileCounts.resolvedFuzzy}</Pill>
                       </div>
-                    ) : null}
-                  </div>
-                </>
-              )}
-            </Card>
+
+                      {/* Grupos exactos */}
+                      <div className="space-y-3">
+                        {supplierGroupsFiltered.length === 0 ? (
+                          <div className="text-sm text-slate-600">No hay grupos que coincidan con la búsqueda.</div>
+                        ) : (
+                          supplierGroupsFiltered.slice(0, 8).map((g) => {
+                            const total = g.variants.reduce((s, v) => s + v.count, 0);
+                            return (
+                              <div key={g.key} className="rounded-xl border border-slate-200 bg-slate-50 p-4">
+                                <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
+                                  <div>
+                                    <div className="text-sm font-semibold text-slate-900">
+                                      {g.chosenDisplay}
+                                      <span className="ml-2 text-xs font-medium text-slate-500">({total} registros)</span>
+                                    </div>
+                                    <div className="mt-1 flex flex-wrap gap-2">
+                                      {g.variants.slice(0, 6).map((v) => (
+                                        <Pill key={v.name}>
+                                          {v.name} · {v.count}
+                                        </Pill>
+                                      ))}
+                                      {g.variants.length > 6 ? <Pill>+{g.variants.length - 6} más</Pill> : null}
+                                    </div>
+                                  </div>
+
+                                  <div className="flex flex-col gap-2 md:items-end">
+                                    <label className="flex items-center gap-2 text-sm text-slate-700">
+                                      <input
+                                        type="checkbox"
+                                        checked={g.merge}
+                                        onChange={(e) => {
+                                          const merge = e.target.checked;
+                                          const updated = supplierGroups.map((x) => (x.key === g.key ? { ...x, merge } : x));
+                                          setSupplierGroups(updated);
+                                          setSupplierGroupOverrides((prev) => ({
+                                            ...prev,
+                                            [g.key]: { merge, chosenDisplay: (prev[g.key]?.chosenDisplay ?? g.chosenDisplay) },
+                                          }));
+                                          showToast("Actualizado en tiempo real ✅");
+                                        }}
+                                        className="h-4 w-4 rounded border-slate-300"
+                                      />
+                                      Unificar este grupo
+                                    </label>
+
+                                    <div className="flex items-center gap-2">
+                                      <span className="text-xs text-slate-600">Nombre:</span>
+                                      <select
+                                        value={g.chosenDisplay}
+                                        onChange={(e) => {
+                                          const chosenDisplay = e.target.value;
+                                          const updated = supplierGroups.map((x) => (x.key === g.key ? { ...x, chosenDisplay } : x));
+                                          setSupplierGroups(updated);
+                                          setSupplierGroupOverrides((prev) => ({
+                                            ...prev,
+                                            [g.key]: { merge: (prev[g.key]?.merge ?? g.merge), chosenDisplay },
+                                          }));
+                                          showToast("Actualizado en tiempo real ✅");
+                                        }}
+                                        className="rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm shadow-sm"
+                                      >
+                                        {g.variants.map((v) => (
+                                          <option key={v.name} value={v.name}>
+                                            {v.name}
+                                          </option>
+                                        ))}
+                                      </select>
+                                    </div>
+
+                                    <button
+                                      type="button"
+                                      className="rounded-xl bg-slate-900 px-3 py-2 text-xs font-semibold text-white hover:bg-slate-800"
+                                      onClick={() => applyAliasesNow()}
+                                    >
+                                      Guardar (en vivo)
+                                    </button>
+                                  </div>
+                                </div>
+                              </div>
+                            );
+                          })
+                        )}
+
+                        {supplierGroupsFiltered.length > 8 ? (
+                          <div className="text-xs text-slate-500">Mostrando 8 grupos (buscador reduce lista).</div>
+                        ) : null}
+                      </div>
+
+                      {/* Fuzzy */}
+                      <div className="mt-6">
+                        <div className="mb-2 text-sm font-semibold text-slate-900">Sugerencias fuzzy</div>
+                        <div className="text-xs text-slate-600 mb-3">Pares similares fuera de grupos exactos.</div>
+
+                        {(showResolvedReconciliation ? fuzzySuggestions : fuzzySuggestions.filter((s) => s.approved === null)).length === 0 ? (
+                          <div className="text-sm text-slate-600">No hay sugerencias fuzzy pendientes.</div>
+                        ) : (
+                          <div className="space-y-2">
+                            {(showResolvedReconciliation ? fuzzySuggestions : fuzzySuggestions.filter((s) => s.approved === null))
+                              .slice(0, 8)
+                              .map((s, idx) => (
+                                <div key={`${s.a}-${s.b}-${idx}`} className="rounded-xl border border-slate-200 bg-white p-4">
+                                  <div className="flex flex-col gap-2 md:flex-row md:items-center md:justify-between">
+                                    <div>
+                                      <div className="text-sm font-semibold text-slate-900">
+                                        {s.a} <span className="text-slate-400">≈</span> {s.b}
+                                      </div>
+                                      <div className="mt-1 text-xs text-slate-600">
+                                        Score: <span className="font-semibold">{(s.score * 100).toFixed(1)}%</span>
+                                      </div>
+                                    </div>
+
+                                    <div className="flex flex-wrap items-center gap-2">
+                                      <span className="text-xs text-slate-600">Nombre:</span>
+                                      <select
+                                        value={s.chosenDisplay}
+                                        onChange={(e) => {
+                                          const chosenDisplay = e.target.value;
+                                          setFuzzySuggestions((prev) =>
+                                            prev.map((x) =>
+                                              x.a === s.a && x.b === s.b && x.score === s.score ? { ...x, chosenDisplay } : x
+                                            )
+                                          );
+                                        }}
+                                        className="rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm shadow-sm"
+                                      >
+                                        {[s.a, s.b].map((v) => (
+                                          <option key={v} value={v}>
+                                            {v}
+                                          </option>
+                                        ))}
+                                      </select>
+
+                                      <button
+                                        type="button"
+                                        className={classNames(
+                                          "rounded-xl px-3 py-2 text-xs font-semibold",
+                                          s.approved === true
+                                            ? "bg-slate-900 text-white"
+                                            : "border border-slate-200 bg-white text-slate-800 hover:border-slate-300"
+                                        )}
+                                        onClick={() => approveFuzzy(s, true)}
+                                      >
+                                        Unificar
+                                      </button>
+
+                                      <button
+                                        type="button"
+                                        className={classNames(
+                                          "rounded-xl px-3 py-2 text-xs font-semibold",
+                                          s.approved === false
+                                            ? "bg-slate-200 text-slate-900"
+                                            : "border border-slate-200 bg-white text-slate-800 hover:border-slate-300"
+                                        )}
+                                        onClick={() => approveFuzzy(s, false)}
+                                      >
+                                        Separar
+                                      </button>
+                                    </div>
+                                  </div>
+                                </div>
+                              ))}
+                          </div>
+                        )}
+
+                        {Object.keys(fuzzyApprovedAliases).length > 0 ? (
+                          <div className="mt-3 text-xs text-slate-500">
+                            Aprobaciones fuzzy activas: {Object.keys(fuzzyApprovedAliases).length} alias(es).
+                          </div>
+                        ) : null}
+                      </div>
+                    </>
+                  )}
+                </div>
+              ) : null}
+            </div>
 
             {/* KPIs */}
             <div className="grid grid-cols-1 gap-4 md:grid-cols-4">
-              <div className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
-                <div className="text-xs font-medium text-slate-500">Registros</div>
-                <div className="mt-1 text-2xl font-semibold text-slate-900">{formatCompact(kpis.total)}</div>
+            <div className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
+              <div className="mb-3 inline-flex h-9 w-9 items-center justify-center rounded-xl text-sm" style={{ background: BRAND.neon, color: BRAND.navy }}>▦</div>
+              <div className="text-xs font-medium text-slate-500">Registros</div>
+              <div className="mt-1 text-2xl font-semibold text-slate-900">{formatCompact(kpis.total)}</div>
+            </div>
+            <div className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
+              <div className="mb-3 inline-flex h-9 w-9 items-center justify-center rounded-xl text-sm" style={{ background: BRAND.neon, color: BRAND.navy }}>◎</div>
+              <div className="text-xs font-medium text-slate-500">Suppliers únicos (unificados)</div>
+              <div className="mt-1 text-2xl font-semibold text-slate-900">
+                {kpis.uniqueSuppliers === null ? "—" : formatCompact(kpis.uniqueSuppliers)}
               </div>
-              <div className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
-                <div className="text-xs font-medium text-slate-500">Suppliers únicos (unificados)</div>
-                <div className="mt-1 text-2xl font-semibold text-slate-900">
-                  {kpis.uniqueSuppliers === null ? "—" : formatCompact(kpis.uniqueSuppliers)}
-                </div>
+            </div>
+            <div className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
+              <div className="mb-3 inline-flex h-9 w-9 items-center justify-center rounded-xl text-sm" style={{ background: BRAND.neon, color: BRAND.navy }}>⌁</div>
+              <div className="text-xs font-medium text-slate-500">Countries únicos</div>
+              <div className="mt-1 text-2xl font-semibold text-slate-900">
+                {kpis.uniqueCountries === null ? "—" : formatCompact(kpis.uniqueCountries)}
               </div>
-              <div className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
-                <div className="text-xs font-medium text-slate-500">Countries únicos</div>
-                <div className="mt-1 text-2xl font-semibold text-slate-900">
-                  {kpis.uniqueCountries === null ? "—" : formatCompact(kpis.uniqueCountries)}
-                </div>
+            </div>
+            <div className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
+              <div className="mb-3 inline-flex h-9 w-9 items-center justify-center rounded-xl text-sm" style={{ background: BRAND.neon, color: BRAND.navy }}>€</div>
+              <div className="text-xs font-medium text-slate-500">Turnover (sum)</div>
+              <div className="mt-1 text-2xl font-semibold text-slate-900">
+                {kpis.turnoverSum === null ? "—" : formatCompact(kpis.turnoverSum)}
               </div>
-              <div className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
-                <div className="text-xs font-medium text-slate-500">Turnover (sum)</div>
-                <div className="mt-1 text-2xl font-semibold text-slate-900">
-                  {kpis.turnoverSum === null ? "—" : formatCompact(kpis.turnoverSum)}
-                </div>
-                <div className="mt-1 text-xs text-slate-500">
-                  Avg: {kpis.turnoverAvg === null ? "—" : formatCompact(kpis.turnoverAvg)}
-                </div>
+              <div className="mt-1 text-xs text-slate-500">
+                Avg: {kpis.turnoverAvg === null ? "—" : formatCompact(kpis.turnoverAvg)}
               </div>
+            </div>
             </div>
 
             {/* Charts */}
@@ -1701,7 +1831,7 @@ export default function DashboardSuppliers() {
                         <XAxis dataKey="name" tick={{ fontSize: 12 }} interval={0} angle={-20} textAnchor="end" height={70} />
                         <YAxis />
                         <Tooltip />
-                        <Bar dataKey="value" />
+                        <Bar dataKey="value" fill={BRAND.neon} />
                       </BarChart>
                     </ResponsiveContainer>
                   </div>
@@ -1722,8 +1852,10 @@ export default function DashboardSuppliers() {
                         <XAxis dataKey="year" />
                         <YAxis />
                         <Tooltip />
-                        <Line type="monotone" dataKey="value" />
-                        {mapping.Turnover ? <Line type="monotone" dataKey="turnover" /> : null}
+                        <Line type="monotone" dataKey="value" stroke={BRAND.skyBlue} strokeWidth={2} dot={false} />
+                        {mapping.Turnover ? (
+                          <Line type="monotone" dataKey="turnover" stroke={BRAND.electricBlue} strokeWidth={2} dot={false} />
+                        ) : null}
                       </LineChart>
                     </ResponsiveContainer>
                   </div>
@@ -1734,7 +1866,14 @@ export default function DashboardSuppliers() {
             </div>
 
             {/* Preview */}
-            <Card title="Vista previa (primeras 30 filas)" right={<span>{headers.length} columnas</span>}>
+            <Card
+              title="Vista previa"
+              right={
+                <span>
+                  {headers.length} columnas · {filteredRows.length} filas · pág {previewPage}/{previewTotalPages}
+                </span>
+              }
+            >
               <div className="overflow-auto rounded-xl border border-slate-200">
                 <table className="min-w-full text-left text-sm">
                   <thead className="bg-slate-50 text-xs text-slate-600">
@@ -1746,7 +1885,7 @@ export default function DashboardSuppliers() {
                     </tr>
                   </thead>
                   <tbody>
-                    {filteredRows.slice(0, 30).map((r, idx) => (
+                    {previewRows.map((r, idx) => (
                       <tr key={idx} className="border-t border-slate-100">
                         {headers.slice(0, 10).map((h) => (
                           <td key={h} className="max-w-[260px] truncate px-3 py-2 text-slate-800">{safeStr(r[h])}</td>
@@ -1756,6 +1895,86 @@ export default function DashboardSuppliers() {
                     ))}
                   </tbody>
                 </table>
+              </div>
+
+              <div className="mt-3 flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+                <div className="text-xs text-slate-600">
+                  Mostrando <span className="font-semibold">{filteredRows.length ? previewFrom + 1 : 0}</span>–{" "}
+                  <span className="font-semibold">{previewTo}</span> de{" "}
+                  <span className="font-semibold">{filteredRows.length}</span>
+                </div>
+
+                <div className="flex flex-wrap items-center gap-2">
+                  <select
+                    value={previewPageSize}
+                    onChange={(e) => {
+                      setPreviewPageSize(Number(e.target.value));
+                      setPreviewPage(1);
+                    }}
+                    className="rounded-xl border border-slate-200 bg-white px-2 py-2 text-xs shadow-sm"
+                    title="Filas por página"
+                  >
+                    {[10, 20, 30, 50, 100].map((n) => (
+                      <option key={n} value={n}>
+                        {n} / pág
+                      </option>
+                    ))}
+                  </select>
+
+                  <button
+                    type="button"
+                    className="rounded-xl border border-slate-200 bg-white px-3 py-2 text-xs font-semibold text-slate-800 disabled:opacity-40"
+                    disabled={previewPage <= 1}
+                    onClick={() => setPreviewPage(1)}
+                  >
+                    « Primera
+                  </button>
+
+                  <button
+                    type="button"
+                    className="rounded-xl border border-slate-200 bg-white px-3 py-2 text-xs font-semibold text-slate-800 disabled:opacity-40"
+                    disabled={previewPage <= 1}
+                    onClick={() => setPreviewPage((p) => Math.max(1, p - 1))}
+                  >
+                    ‹ Anterior
+                  </button>
+
+                  <div className="flex items-center gap-2 rounded-xl border border-slate-200 bg-white px-3 py-2 text-xs shadow-sm">
+                    <span className="text-slate-600">Pág</span>
+                    <input
+                      type="number"
+                      min={1}
+                      max={previewTotalPages}
+                      value={previewPage}
+                      onChange={(e) => {
+                        const v = Number(e.target.value);
+                        if (!Number.isFinite(v)) return;
+                        setPreviewPage(Math.min(Math.max(1, v), previewTotalPages));
+                      }}
+                      className="w-16 rounded-lg border border-slate-200 bg-white px-2 py-1 text-xs focus:outline-none"
+                    />
+                    <span className="text-slate-600">de</span>
+                    <span className="font-semibold text-slate-800">{previewTotalPages}</span>
+                  </div>
+
+                  <button
+                    type="button"
+                    className="rounded-xl border border-slate-200 bg-white px-3 py-2 text-xs font-semibold text-slate-800 disabled:opacity-40"
+                    disabled={previewPage >= previewTotalPages}
+                    onClick={() => setPreviewPage((p) => Math.min(previewTotalPages, p + 1))}
+                  >
+                    Siguiente ›
+                  </button>
+
+                  <button
+                    type="button"
+                    className="rounded-xl border border-slate-200 bg-white px-3 py-2 text-xs font-semibold text-slate-800 disabled:opacity-40"
+                    disabled={previewPage >= previewTotalPages}
+                    onClick={() => setPreviewPage(previewTotalPages)}
+                  >
+                    Última »
+                  </button>
+                </div>
               </div>
 
               <div className="mt-3 flex flex-wrap gap-2">
