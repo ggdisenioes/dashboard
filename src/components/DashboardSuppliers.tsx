@@ -1,3 +1,79 @@
+// --- IndexedDB persistence & types ---
+type SupplierGroupOverride = { merge: boolean; chosenDisplay: string };
+
+type PersistedStateV1 = {
+  version: 1;
+  savedAt: number;
+  rows: Row[];
+  headers: string[];
+  colTypes: Record<string, ColType>;
+  filesLoaded: number;
+  mapping: FieldMapping;
+  fixedFilters: {
+    Buyer: string[];
+    Supplier: string[];
+    Country: string[];
+    Year: string[];
+    Sector: string[];
+    Turnover: { from: number | null; to: number | null };
+  };
+  dynamicFilters: DynamicFilter[];
+  supplierUnifyEnabled: boolean;
+  supplierGroupOverrides: Record<string, SupplierGroupOverride>;
+  fuzzyApprovedAliases: Record<string, string>;
+};
+
+const IDB_DB = "dashboard_suppliers";
+const IDB_STORE = "kv";
+const IDB_KEY = "snapshot_v1";
+
+function idbOpen(): Promise<IDBDatabase> {
+  return new Promise((resolve, reject) => {
+    const req = indexedDB.open(IDB_DB, 1);
+    req.onupgradeneeded = () => {
+      const db = req.result;
+      if (!db.objectStoreNames.contains(IDB_STORE)) db.createObjectStore(IDB_STORE);
+    };
+    req.onsuccess = () => resolve(req.result);
+    req.onerror = () => reject(req.error);
+  });
+}
+
+async function idbGet<T>(key: string): Promise<T | null> {
+  const db = await idbOpen();
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(IDB_STORE, "readonly");
+    const store = tx.objectStore(IDB_STORE);
+    const req = store.get(key);
+    req.onsuccess = () => resolve((req.result ?? null) as T | null);
+    req.onerror = () => reject(req.error);
+    tx.oncomplete = () => db.close();
+  });
+}
+
+async function idbSet<T>(key: string, value: T): Promise<void> {
+  const db = await idbOpen();
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(IDB_STORE, "readwrite");
+    const store = tx.objectStore(IDB_STORE);
+    const req = store.put(value as any, key);
+    req.onsuccess = () => resolve();
+    req.onerror = () => reject(req.error);
+    tx.oncomplete = () => db.close();
+  });
+}
+
+async function idbDel(key: string): Promise<void> {
+  const db = await idbOpen();
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(IDB_STORE, "readwrite");
+    const store = tx.objectStore(IDB_STORE);
+    const req = store.delete(key);
+    req.onsuccess = () => resolve();
+    req.onerror = () => reject(req.error);
+    tx.oncomplete = () => db.close();
+  });
+}
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import * as XLSX from "xlsx";
 import {
@@ -503,6 +579,13 @@ export default function DashboardSuppliers() {
   const [fuzzySuggestions, setFuzzySuggestions] = useState<FuzzySuggestion[]>([]);
   const [fuzzyApprovedAliases, setFuzzyApprovedAliases] = useState<Record<string, string>>({});
 
+  // Persisted user decisions
+  const [supplierGroupOverrides, setSupplierGroupOverrides] = useState<Record<string, SupplierGroupOverride>>({});
+
+  // Hydration guard
+  const [hydrated, setHydrated] = useState(false);
+  const [hasSavedSession, setHasSavedSession] = useState(false);
+
   // UI feedback
   const [toast, setToast] = useState<string | null>(null);
   const toastTimerRef = useRef<number | null>(null);
@@ -535,8 +618,42 @@ export default function DashboardSuppliers() {
     return () => document.removeEventListener("mousedown", onDoc);
   }, []);
 
+  // --- IndexedDB: Save/reset helpers ---
+  const saveTimerRef = useRef<number | null>(null);
+
+  async function clearSavedSession() {
+    await idbDel(IDB_KEY);
+    setHasSavedSession(false);
+
+    // Reset app state
+    setRows([]);
+    setHeaders([]);
+    setColTypes({});
+    setFilesLoaded(0);
+    setMapping({ Buyer: null, Supplier: null, Country: null, Year: null, Turnover: null, Sector: null });
+    setFixedFilters({ Buyer: [], Supplier: [], Country: [], Year: [], Sector: [], Turnover: { from: null, to: null } });
+    setDynamicFilters([]);
+    setSupplierGroups([]);
+    setSupplierAliasMap({});
+    setSupplierUnifyEnabled(true);
+    setSupplierGroupOverrides({});
+    setFuzzySuggestions([]);
+    setFuzzyApprovedAliases({});
+
+    showToast("Sesión borrada ✅");
+  }
+
+  function applyOverridesToGroups(groups: SupplierGroup[]) {
+    return groups.map((g) => {
+      const ov = supplierGroupOverrides[g.key];
+      if (!ov) return g;
+      return { ...g, merge: ov.merge, chosenDisplay: ov.chosenDisplay };
+    });
+  }
+
   function recomputeSupplierStuff(allRows: Row[], supplierCol: string | null) {
-    const groups = buildSupplierGroups(allRows, supplierCol);
+    const rawGroups = buildSupplierGroups(allRows, supplierCol);
+    const groups = applyOverridesToGroups(rawGroups);
     setSupplierGroups(groups);
 
     const fuzzy = buildFuzzySuggestions(allRows, supplierCol, 40);
@@ -866,10 +983,103 @@ export default function DashboardSuppliers() {
     }));
 
     setSupplierGroups(updated);
+    setSupplierGroupOverrides(() => {
+      const next: Record<string, SupplierGroupOverride> = {};
+      for (const g of updated) next[g.key] = { merge: true, chosenDisplay: g.chosenDisplay };
+      return next;
+    });
+
     setSupplierUnifyEnabled(true);
     setFixedFilters((s) => ({ ...s, Supplier: [] }));
     showToast("Merges sugeridos aplicados ✅");
   }
+  // --- IndexedDB hydration on mount ---
+  useEffect(() => {
+    (async () => {
+      try {
+        const snap = await idbGet<PersistedStateV1>(IDB_KEY);
+        if (!snap || snap.version !== 1) {
+          setHasSavedSession(false);
+          setHydrated(true);
+          return;
+        }
+
+        setHasSavedSession(true);
+        setRows(snap.rows ?? []);
+        setHeaders(snap.headers ?? []);
+        setColTypes(snap.colTypes ?? {});
+        setFilesLoaded(snap.filesLoaded ?? 0);
+        setMapping(snap.mapping ?? { Buyer: null, Supplier: null, Country: null, Year: null, Turnover: null, Sector: null });
+        setFixedFilters(snap.fixedFilters ?? { Buyer: [], Supplier: [], Country: [], Year: [], Sector: [], Turnover: { from: null, to: null } });
+        setDynamicFilters(snap.dynamicFilters ?? []);
+        setSupplierUnifyEnabled(snap.supplierUnifyEnabled ?? true);
+        setSupplierGroupOverrides(snap.supplierGroupOverrides ?? {});
+        setFuzzyApprovedAliases(snap.fuzzyApprovedAliases ?? {});
+
+        // Rebuild groups + fuzzy from rows and apply overrides
+        const supplierCol = (snap.mapping?.Supplier ?? null) as string | null;
+        if (snap.rows && snap.rows.length) {
+          // recompute will apply overrides and build alias map
+          // defer to next tick to ensure overrides are in state
+          setTimeout(() => {
+            recomputeSupplierStuff(snap.rows, supplierCol);
+          }, 0);
+        }
+
+        showToast("Sesión restaurada ✅");
+      } catch {
+        // ignore restore errors
+      } finally {
+        setHydrated(true);
+      }
+    })();
+  }, []);
+
+  // --- IndexedDB autosave (debounced) ---
+  useEffect(() => {
+    if (!hydrated) return;
+
+    // Only save if we have data
+    if (!rows.length) {
+      // If user cleared data, also clear saved snapshot
+      setHasSavedSession(false);
+      return;
+    }
+
+    const snapshot: PersistedStateV1 = {
+      version: 1,
+      savedAt: Date.now(),
+      rows,
+      headers,
+      colTypes,
+      filesLoaded,
+      mapping,
+      fixedFilters,
+      dynamicFilters,
+      supplierUnifyEnabled,
+      supplierGroupOverrides,
+      fuzzyApprovedAliases,
+    };
+
+    if (saveTimerRef.current) window.clearTimeout(saveTimerRef.current);
+    saveTimerRef.current = window.setTimeout(() => {
+      idbSet(IDB_KEY, snapshot)
+        .then(() => setHasSavedSession(true))
+        .catch(() => {});
+    }, 350);
+  }, [
+    hydrated,
+    rows,
+    headers,
+    colTypes,
+    filesLoaded,
+    mapping,
+    fixedFilters,
+    dynamicFilters,
+    supplierUnifyEnabled,
+    supplierGroupOverrides,
+    fuzzyApprovedAliases,
+  ]);
 
   // UPGRADE 3: approve fuzzy suggestion -> crea alias manual (a y b -> chosenDisplay)
   function approveFuzzy(s: FuzzySuggestion, approved: boolean) {
@@ -951,6 +1161,17 @@ export default function DashboardSuppliers() {
                 <span className="text-slate-700">📁 Cargar archivo(s)</span>
               </label>
 
+              {hasSavedSession ? (
+                <button
+                  type="button"
+                  className="rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm font-semibold text-slate-800 shadow-sm hover:border-slate-300"
+                  onClick={clearSavedSession}
+                  title="Borra la sesión guardada (datos + decisiones)"
+                >
+                  🧹 Borrar sesión
+                </button>
+              ) : null}
+
               <button
                 type="button"
                 className="rounded-xl bg-slate-900 px-3 py-2 text-sm font-semibold text-white hover:bg-slate-800 disabled:opacity-50"
@@ -965,6 +1186,7 @@ export default function DashboardSuppliers() {
                 <>
                   <Pill>{formatCompact(filteredRows.length)} / {formatCompact(rows.length)} filas</Pill>
                   <Pill>{filesLoaded} archivo(s)</Pill>
+                  {hasSavedSession ? <Pill>Sesión guardada</Pill> : null}
                 </>
               ) : (
                 <Pill>Sin archivo</Pill>
@@ -1242,6 +1464,11 @@ export default function DashboardSuppliers() {
                                       const merge = e.target.checked;
                                       const updated = supplierGroups.map((x) => (x.key === g.key ? { ...x, merge } : x));
                                       setSupplierGroups(updated);
+                                      setSupplierGroupOverrides((prev) => ({
+                                        ...prev,
+                                        [g.key]: { merge, chosenDisplay: (prev[g.key]?.chosenDisplay ?? g.chosenDisplay) },
+                                      }));
+                                      showToast("Actualizado en tiempo real ✅");
                                     }}
                                     className="h-4 w-4 rounded border-slate-300"
                                   />
@@ -1256,6 +1483,11 @@ export default function DashboardSuppliers() {
                                       const chosenDisplay = e.target.value;
                                       const updated = supplierGroups.map((x) => (x.key === g.key ? { ...x, chosenDisplay } : x));
                                       setSupplierGroups(updated);
+                                      setSupplierGroupOverrides((prev) => ({
+                                        ...prev,
+                                        [g.key]: { merge: (prev[g.key]?.merge ?? g.merge), chosenDisplay },
+                                      }));
+                                      showToast("Actualizado en tiempo real ✅");
                                     }}
                                     className="rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm shadow-sm"
                                   >
@@ -1272,7 +1504,7 @@ export default function DashboardSuppliers() {
                                   className="rounded-xl bg-slate-900 px-3 py-2 text-xs font-semibold text-white hover:bg-slate-800"
                                   onClick={() => applyAliasesNow()}
                                 >
-                                  Aplicar cambios
+                                  Guardar (ya es en vivo)
                                 </button>
                               </div>
                             </div>
