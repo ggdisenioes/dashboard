@@ -298,7 +298,7 @@ function buildSupplierGroups(rows: Row[], supplierCol: string | null): SupplierG
       variants,
       suggestedDisplay,
       chosenDisplay: suggestedDisplay,
-      merge: true,
+      merge: false,
     });
   }
 
