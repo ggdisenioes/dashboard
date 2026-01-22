@@ -575,6 +575,9 @@ export default function DashboardSuppliers() {
   // UPGRADE 1: search
   const [supplierGroupSearch, setSupplierGroupSearch] = useState("");
 
+  // UX: hide resolved merges by default
+  const [showResolvedReconciliation, setShowResolvedReconciliation] = useState(false);
+
   // UPGRADE 3: fuzzy suggestions + aprobaciones (manual aliases)
   const [fuzzySuggestions, setFuzzySuggestions] = useState<FuzzySuggestion[]>([]);
   const [fuzzyApprovedAliases, setFuzzyApprovedAliases] = useState<Record<string, string>>({});
@@ -1150,13 +1153,17 @@ export default function DashboardSuppliers() {
 
   const supplierGroupsFiltered = useMemo(() => {
     const q = supplierGroupSearch.trim().toLowerCase();
-    if (!q) return supplierGroups;
-    return supplierGroups.filter((g) => {
+
+    const base = showResolvedReconciliation ? supplierGroups : supplierGroups.filter((g) => !g.merge);
+
+    if (!q) return base;
+
+    return base.filter((g) => {
       if (g.chosenDisplay.toLowerCase().includes(q)) return true;
       if (g.suggestedDisplay.toLowerCase().includes(q)) return true;
       return g.variants.some((v) => v.name.toLowerCase().includes(q));
     });
-  }, [supplierGroups, supplierGroupSearch]);
+  }, [supplierGroups, supplierGroupSearch, showResolvedReconciliation]);
 
   return (
     <div className="min-h-screen bg-slate-50">
@@ -1425,6 +1432,15 @@ export default function DashboardSuppliers() {
                     />
                     Activar unificación en dashboard
                   </label>
+                  <label className="flex items-center gap-2 text-xs text-slate-600">
+                    <input
+                      type="checkbox"
+                      checked={showResolvedReconciliation}
+                      onChange={(e) => setShowResolvedReconciliation(e.target.checked)}
+                      className="h-4 w-4 rounded border-slate-300"
+                    />
+                    Mostrar resueltos
+                  </label>
                   <button
                     type="button"
                     className="rounded-xl border border-slate-200 bg-white px-3 py-2 text-xs font-semibold text-slate-800 hover:border-slate-300"
@@ -1461,6 +1477,14 @@ export default function DashboardSuppliers() {
                   </div>
 
                   {/* Grupos exactos */}
+                  <div className="mb-3 flex flex-wrap items-center justify-between gap-2 rounded-xl border border-slate-200 bg-white px-3 py-2 text-xs text-slate-600">
+                    <div className="flex flex-wrap items-center gap-2">
+                      <Pill>Pendientes: {supplierGroups.filter((g) => !g.merge).length} grupos</Pill>
+                      <Pill>Resueltos: {supplierGroups.filter((g) => g.merge).length} grupos</Pill>
+                      <Pill>Pendientes fuzzy: {fuzzySuggestions.filter((s) => s.approved === null).length}</Pill>
+                    </div>
+                    <div className="text-slate-500">Tip: por defecto se ocultan los resueltos.</div>
+                  </div>
                   <div className="space-y-3">
                     {supplierGroupsFiltered.length === 0 ? (
                       <div className="text-sm text-slate-600">No hay grupos que coincidan con la búsqueda.</div>
@@ -1555,11 +1579,18 @@ export default function DashboardSuppliers() {
                       Estos pares no cayeron en el mismo grupo exacto, pero son muy similares. Aprobá “Unificar” o “Separar”.
                     </div>
 
-                    {fuzzySuggestions.length === 0 ? (
-                      <div className="text-sm text-slate-600">No detecté duplicados probables con el umbral actual.</div>
+                    {(
+                      showResolvedReconciliation
+                        ? fuzzySuggestions
+                        : fuzzySuggestions.filter((s) => s.approved === null)
+                    ).length === 0 ? (
+                      <div className="text-sm text-slate-600">No hay sugerencias fuzzy pendientes.</div>
                     ) : (
                       <div className="space-y-2">
-                        {fuzzySuggestions.map((s, idx) => (
+                        {(showResolvedReconciliation
+                          ? fuzzySuggestions
+                          : fuzzySuggestions.filter((s) => s.approved === null)
+                        ).map((s, idx) => (
                           <div key={`${s.a}-${s.b}-${idx}`} className="rounded-xl border border-slate-200 bg-white p-4">
                             <div className="flex flex-col gap-2 md:flex-row md:items-center md:justify-between">
                               <div>
