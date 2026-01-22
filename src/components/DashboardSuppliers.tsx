@@ -507,13 +507,9 @@ export default function DashboardSuppliers() {
   const supplierGroupsRef = useRef<SupplierGroup[]>([]);
   const fuzzyApprovedAliasesRef = useRef<Record<string, string>>({});
 
-  useEffect(() => {
-    supplierGroupsRef.current = supplierGroups;
-  }, [supplierGroups]);
-
-  useEffect(() => {
-    fuzzyApprovedAliasesRef.current = fuzzyApprovedAliases;
-  }, [fuzzyApprovedAliases]);
+  // IMPORTANT: keep refs in sync during render so buttons work immediately after loading data
+  supplierGroupsRef.current = supplierGroups;
+  fuzzyApprovedAliasesRef.current = fuzzyApprovedAliases;
 
   useEffect(() => {
     const onDoc = (e: MouseEvent) => {
@@ -532,7 +528,8 @@ export default function DashboardSuppliers() {
     setFuzzySuggestions(fuzzy);
 
     // Alias final (grupos + fuzzy aprobados)
-    setSupplierAliasMap(buildSupplierAliasMap(groups, fuzzyApprovedAliases));
+    setSupplierAliasMap(buildSupplierAliasMap(groups, fuzzyApprovedAliasesRef.current));
+    setSupplierUnifyEnabled(true);
   }
 
   function supplierDisplay(raw: string) {
