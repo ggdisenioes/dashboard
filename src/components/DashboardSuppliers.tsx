@@ -1438,9 +1438,9 @@ export default function DashboardSuppliers() {
       ) : null}
       {/* Top bar */}
       <div className="border-b" style={{ borderColor: BRAND.darkBlue, background: BRAND.navy }}>
-        <div className="mx-auto w-full max-w-none px-4 py-12 sm:px-6 lg:px-10 2xl:px-14">
+        <div className="mx-auto w-full max-w-screen-2xl px-4 py-6 sm:px-6 sm:py-10 lg:px-10 lg:py-12 2xl:px-14">
           <div className="grid grid-cols-1 gap-3 md:grid-cols-3 md:items-center">
-            <div>
+            <div className="text-center md:text-left">
               <div className="text-sm font-semibold text-white/90 tracking-wide">SUPPLIERS DASHBOARD</div>
               <div className="mt-1 text-xs text-white/70">
                 Cargá uno o varios CSV/XLSX. Supplier se reconcilia (variantes + fuzzy). Exporta resultados filtrados.
@@ -1453,12 +1453,12 @@ export default function DashboardSuppliers() {
                 <img
                   src={HEADER_LOGO_SRC}
                   alt="Twinco Capital"
-                  className="h-20 md:h-28 lg:h-32 w-auto object-contain"
+                  className="h-16 w-auto max-w-[85vw] object-contain sm:h-20 md:h-24 lg:h-28"
                 />
               </div>
             </div>
 
-            <div className="flex flex-wrap items-center justify-start gap-3 md:justify-end">
+            <div className="flex flex-wrap items-center justify-center gap-3 md:justify-end">
               <label
                 className="inline-flex cursor-pointer items-center gap-2 rounded-xl border px-3 py-2 text-sm shadow-sm"
                 style={{ borderColor: "rgba(255,255,255,0.18)", background: "rgba(255,255,255,0.06)" }}
@@ -1524,14 +1524,13 @@ export default function DashboardSuppliers() {
       </div>
 
       {/* Spacer to keep filters lower under the large header */}
-      <div className="h-12" style={{ background: BRAND.lightGrey }} />
+      <div className="h-4 sm:h-8" style={{ background: BRAND.lightGrey }} />
 
       {/* Filters */}
       <div className="border-b" style={{ borderColor: BRAND.softGrey, background: "rgba(255,255,255,0.92)", backdropFilter: "blur(8px)" }}>
-        <div className="mx-auto w-full max-w-none px-4 py-9 sm:px-6 lg:px-10 2xl:px-14">
-          
+        <div className="mx-auto w-full max-w-screen-2xl px-4 py-4 sm:px-6 sm:py-6 lg:px-10 2xl:px-14">
 
-          <div className="mt-5">
+          <div className="mt-3">
             {!hasData ? (
               <div className="rounded-xl border border-slate-200 bg-white px-3 py-3 text-sm text-slate-500 shadow-sm">
                 Cargá un archivo para habilitar los filtros extra por cabecera.
