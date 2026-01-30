@@ -672,13 +672,23 @@ function MultiSelect({
             )}
           </div>
           <div className="flex items-center justify-between border-t border-slate-100 p-2">
-            <button
-              type="button"
-              className="rounded-lg px-2 py-1 text-xs font-medium text-slate-600 hover:bg-slate-50"
-              onClick={() => onChange([])}
-            >
-              Limpiar
-            </button>
+            <div className="flex items-center gap-2">
+              <button
+                type="button"
+                className="rounded-lg px-2 py-1 text-xs font-medium text-slate-600 hover:bg-slate-50"
+                onClick={() => onChange([])}
+              >
+                Limpiar
+              </button>
+              <button
+                type="button"
+                className="rounded-lg px-2 py-1 text-xs font-semibold text-slate-800 hover:bg-slate-50"
+                onClick={() => onChange(uniq(options))}
+                title="Seleccionar todos"
+              >
+                Todos
+              </button>
+            </div>
             <button
               type="button"
               className="rounded-lg bg-slate-900 px-3 py-1.5 text-xs font-semibold text-white hover:bg-slate-800"
@@ -1628,24 +1638,57 @@ export default function DashboardSuppliers() {
             ))}
 
             {hasData ? (
-              <button
-                type="button"
-                className="ml-auto rounded-xl bg-slate-900 px-3 py-2 text-sm font-semibold text-white hover:bg-slate-800"
-                onClick={() => {
-  setSelectedColumns([]);
-  setDynamicFilters([]);
-  setFixedFilters({
-    Buyer: [],
-    Supplier: [],
-    Country: [],
-    Year: [],
-    Sector: [],
-    Turnover: { from: null, to: null },
-  });
-}}
-              >
-                Limpiar filtros
-              </button>
+              <div className="ml-auto flex items-center gap-2">
+                <button
+                  type="button"
+                  className="rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm font-semibold text-slate-800 hover:border-slate-300"
+                  onClick={() => {
+                    // Select ALL values in each active filter (multi). Other kinds are reset to include everything.
+                    setDynamicFilters((fs) =>
+                      fs.map((f) => {
+                        if (f.kind === "multi") {
+                          const opts = dynamicOptions[f.column] ?? [];
+                          return { ...f, value: opts };
+                        }
+                        if (f.kind === "range") {
+                          return { ...f, value: { ...f.value, from: null, to: null } };
+                        }
+                        if (f.kind === "boolean") {
+                          return { ...f, value: null };
+                        }
+                        if (f.kind === "text") {
+                          return { ...f, value: "" };
+                        }
+                        return f;
+                      })
+                    );
+                    showToast("TODOS aplicado ✅");
+                  }}
+                  title="Selecciona todos los ítems en cada filtro"
+                >
+                  TODOS
+                </button>
+
+                <button
+                  type="button"
+                  className="rounded-xl bg-slate-900 px-3 py-2 text-sm font-semibold text-white hover:bg-slate-800"
+                  onClick={() => {
+                    setSelectedColumns([]);
+                    setDynamicFilters([]);
+                    setFixedFilters({
+                      Buyer: [],
+                      Supplier: [],
+                      Country: [],
+                      Year: [],
+                      Sector: [],
+                      Turnover: { from: null, to: null },
+                    });
+                  }}
+                  title="Limpia columnas y filtros"
+                >
+                  Limpiar filtros
+                </button>
+              </div>
             ) : null}
           </div>
         </div>
