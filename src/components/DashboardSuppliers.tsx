@@ -124,7 +124,7 @@ type ColType = "number" | "string" | "boolean" | "date" | "unknown";
 type FixedFieldKey = "Buyer" | "Supplier" | "Country" | "Year" | "Turnover" | "Sector";
 type FieldMapping = Record<FixedFieldKey, string | null>;
 
-type FilterKind = "multi" | "range" | "boolean";
+type FilterKind = "multi" | "range" | "boolean" | "text";
 type DynamicFilter = { id: string; column: string; kind: FilterKind; value: any };
 
 type SupplierVariant = { name: string; count: number };
@@ -211,7 +211,96 @@ const LEGAL_SUFFIXES = new Set([
   "sa", "s.a", "s.a.", "sl", "s.l", "s.l.", "srl", "s.r.l", "s.r.l.",
   "ltd", "ltd.", "limited", "inc", "inc.", "llc", "gmbh", "bv", "b.v", "b.v.",
   "ag", "spa", "s.p.a", "s.p.a.", "co", "company", "corp", "corporation",
+  // common variants
+  "private", "pvt", "pvt.", "pte", "pte.", "plc", "group", "holding", "holdings",
 ]);
+/** ---------- Smart Excel/CSV parsing (detect header row) ---------- */
+function makeUniqueHeaders(headers: string[]) {
+  const seen = new Map<string, number>();
+  return headers.map((h, i) => {
+    const base = normalizeHeader(h) || `Column ${i + 1}`;
+    const key = base.toLowerCase();
+    const n = (seen.get(key) ?? 0) + 1;
+    seen.set(key, n);
+    return n === 1 ? base : `${base} (${n})`;
+  });
+}
+
+function scoreHeaderRow(row: any[]) {
+  const tokens = [
+    "buyer", "brand", "customer",
+    "supplier", "vendor", "factory", "name",
+    "country", "year", "turnover", "revenue", "sales", "amount",
+    "sector", "industry",
+    "status", "program",
+  ];
+  let score = 0;
+  for (const cell of row) {
+    if (!cell) continue;
+    const s = String(cell).trim().toLowerCase();
+    if (!s) continue;
+    for (const t of tokens) {
+      if (s === t || s.includes(t)) {
+        score += 1;
+        break;
+      }
+    }
+  }
+  return score;
+}
+
+function sheetToRowsSmart(ws: XLSX.WorkSheet) {
+  // Get a matrix of rows (arrays). Keeps blank rows=false for a cleaner scan.
+  const matrix: any[][] = XLSX.utils.sheet_to_json(ws, { header: 1, defval: null, blankrows: false });
+
+  // Find best header row among first ~30 lines.
+  let bestIdx = 0;
+  let bestScore = -1;
+  const scanLimit = Math.min(matrix.length, 30);
+  for (let i = 0; i < scanLimit; i++) {
+    const row = matrix[i] ?? [];
+    // Skip rows that are basically empty
+    const nonEmpty = row.some((v) => v !== null && v !== undefined && String(v).trim() !== "");
+    if (!nonEmpty) continue;
+    const s = scoreHeaderRow(row);
+    if (s > bestScore) {
+      bestScore = s;
+      bestIdx = i;
+    }
+  }
+
+  // If we didn't find a convincing header, fall back to first non-empty row.
+  if (bestScore < 2) {
+    bestIdx = 0;
+    for (let i = 0; i < scanLimit; i++) {
+      const row = matrix[i] ?? [];
+      const nonEmpty = row.some((v) => v !== null && v !== undefined && String(v).trim() !== "");
+      if (nonEmpty) {
+        bestIdx = i;
+        break;
+      }
+    }
+  }
+
+  const rawHeaders = (matrix[bestIdx] ?? []).map((v) => (v == null ? "" : String(v)));
+  const headers = makeUniqueHeaders(rawHeaders);
+
+  const outRows: Row[] = [];
+  for (let r = bestIdx + 1; r < matrix.length; r++) {
+    const row = matrix[r] ?? [];
+    const nonEmpty = row.some((v) => v !== null && v !== undefined && String(v).trim() !== "");
+    if (!nonEmpty) continue;
+
+    const obj: Row = {};
+    for (let c = 0; c < headers.length; c++) {
+      const h = headers[c];
+      obj[h] = row[c] ?? null;
+    }
+    outRows.push(obj);
+  }
+
+  return { headers, rows: outRows };
+}
 
 function stripDiacritics(s: string) {
   return s.normalize("NFD").replace(/[\u0300-\u036f]/g, "");
@@ -604,8 +693,6 @@ export default function DashboardSuppliers() {
   });
 
   const [dynamicFilters, setDynamicFilters] = useState<DynamicFilter[]>([]);
-  const [addOpen, setAddOpen] = useState(false);
-  const addRef = useRef<HTMLDivElement | null>(null);
 
   // Unificación supplier
   const [supplierGroups, setSupplierGroups] = useState<SupplierGroup[]>([]);
@@ -662,14 +749,6 @@ export default function DashboardSuppliers() {
     setSupplierAliasMap(buildSupplierAliasMap(supplierGroups, fuzzyApprovedAliases));
   }, [supplierGroups, fuzzyApprovedAliases]);
 
-  useEffect(() => {
-    const onDoc = (e: MouseEvent) => {
-      if (!addRef.current) return;
-      if (!addRef.current.contains(e.target as Node)) setAddOpen(false);
-    };
-    document.addEventListener("mousedown", onDoc);
-    return () => document.removeEventListener("mousedown", onDoc);
-  }, []);
 
   // --- IndexedDB: Save/reset helpers ---
   const saveTimerRef = useRef<number | null>(null);
@@ -742,12 +821,12 @@ export default function DashboardSuppliers() {
       const buf = await file.arrayBuffer();
       const wb = XLSX.read(buf, { type: "array" });
       const ws = wb.Sheets[wb.SheetNames[0]];
-      const json: Row[] = XLSX.utils.sheet_to_json(ws, { defval: null });
 
-      const hs = Object.keys(json[0] ?? {}).map(normalizeHeader);
+      const parsed = sheetToRowsSmart(ws);
+      const hs = parsed.headers.map(normalizeHeader);
       if (incomingHeaders.length === 0) incomingHeaders = hs;
 
-      const normalizedRows: Row[] = json.map((r) => {
+      const normalizedRows: Row[] = parsed.rows.map((r) => {
         const nr: Row = {};
         for (const k of Object.keys(r)) nr[normalizeHeader(k)] = r[k];
         return nr;
@@ -762,20 +841,51 @@ export default function DashboardSuppliers() {
     const types: Record<string, ColType> = {};
     for (const h of headerUnion) types[h] = inferColType(merged, h);
 
+    // Only keep previous mapping if the column exists in the new headerUnion, otherwise re-detect
+    const keepIfExists = (col: string | null) => (col && headerUnion.includes(col) ? col : null);
+
     const detected: FieldMapping = {
-      Buyer: mapping.Buyer ?? pickColumn(headerUnion, ["Buyer", "buyer", "Brand", "brand", "Customer", "customer"]),
-      Supplier: mapping.Supplier ?? pickColumn(headerUnion, ["Supplier", "supplier", "Vendor", "vendor", "Factory", "factory", "name"]),
-      Country: mapping.Country ?? pickColumn(headerUnion, ["Country", "country", "CountryName", "country_name", "country name"]),
-      Year: mapping.Year ?? pickColumn(headerUnion, ["Year", "year", "Año", "anio", "FY", "fiscal_year"]),
-      Turnover: mapping.Turnover ?? pickColumn(headerUnion, ["Turnover", "turnover", "Revenue", "revenue", "Sales", "sales", "Amount", "amount"]),
-      Sector: mapping.Sector ?? pickColumn(headerUnion, ["Sector", "sector", "Industry", "industry"]),
+      Buyer:
+        keepIfExists(mapping.Buyer) ??
+        pickColumn(headerUnion, ["Buyer", "buyer", "Brand", "brand", "Customer", "customer"]),
+      Supplier:
+        keepIfExists(mapping.Supplier) ??
+        pickColumn(headerUnion, [
+          "Supplier",
+          "supplier",
+          "Vendor",
+          "vendor",
+          "Factory",
+          "factory",
+          "name",
+          "Name",
+        ]),
+      Country:
+        keepIfExists(mapping.Country) ??
+        pickColumn(headerUnion, ["Country", "country", "CountryName", "country_name", "country name"]),
+      Year:
+        keepIfExists(mapping.Year) ??
+        pickColumn(headerUnion, ["Year", "year", "Año", "anio", "FY", "fiscal_year"]),
+      Turnover:
+        keepIfExists(mapping.Turnover) ??
+        pickColumn(headerUnion, ["Turnover", "turnover", "Revenue", "revenue", "Sales", "sales", "Amount", "amount"]),
+      Sector:
+        keepIfExists(mapping.Sector) ??
+        pickColumn(headerUnion, ["Sector", "sector", "Industry", "industry"]),
     };
 
     setRows(merged);
     setHeaders(headerUnion);
     setColTypes(types);
+    // Safety reset: if the supplier column changed, clear supplier-related filters
+    const supplierChanged = mapping.Supplier !== detected.Supplier;
     setMapping(detected);
     setFilesLoaded((n) => n + fileList.length);
+
+    // Si cambió la columna Supplier (p.ej. de "Supplier" a "Name"), limpiamos selección para evitar filtros inválidos
+    if (supplierChanged) {
+      setFixedFilters((s) => ({ ...s, Supplier: [] }));
+    }
 
     // recalcular conciliación total
     recomputeSupplierStuff(merged, detected.Supplier);
@@ -829,34 +939,44 @@ export default function DashboardSuppliers() {
   // Add-filter candidates
   const addCandidates = useMemo(() => {
     const fixedCols = new Set(Object.values(mapping).filter(Boolean) as string[]);
-    const addedCols = new Set(dynamicFilters.map((f) => f.column));
     return headers
       .filter((h) => !fixedCols.has(h))
-      .filter((h) => !addedCols.has(h))
-      .filter((h) => !["id", "os_id", "lat", "lng", "address"].includes(h.toLowerCase()))
+      .filter((h) => !["id", "os_id", "lat", "lng"].includes(h.toLowerCase()))
       .sort((a, b) => a.localeCompare(b));
-  }, [headers, mapping, dynamicFilters]);
+  }, [headers, mapping]);
 
-  function createDynamicFilter(column: string) {
+  function makeDynamicFilter(column: string): DynamicFilter {
     const t = colTypes[column] ?? "unknown";
-    let kind: FilterKind = "multi";
-    let value: any = [];
+
+    // numeric range
     if (t === "number") {
       const nums = rows.map((r) => toNumber(r[column])).filter((n): n is number => n !== null);
       const min = nums.length ? Math.min(...nums) : 0;
       const max = nums.length ? Math.max(...nums) : 0;
-      kind = "range";
-      value = { from: null, to: null, min, max };
-    } else if (t === "boolean") {
-      kind = "boolean";
-      value = null;
-    } else {
-      kind = "multi";
-      value = [];
+      return { id: column, column, kind: "range", value: { from: null, to: null, min, max } };
     }
-    setDynamicFilters((fs) => [...fs, { id: column, column, kind, value }]);
-    setAddOpen(false);
+
+    // boolean
+    if (t === "boolean") {
+      return { id: column, column, kind: "boolean", value: null };
+    }
+
+    // string/unknown: choose multi vs text depending on cardinality
+    const uniqVals = uniq(rows.map((r) => safeStr(r[column])).filter(Boolean));
+    if (uniqVals.length > 300) {
+      return { id: column, column, kind: "text", value: "" };
+    }
+
+    return { id: column, column, kind: "multi", value: [] };
   }
+
+  function syncDynamicFilters(selectedCols: string[]) {
+    setDynamicFilters((prev) => {
+      const prevMap = new Map(prev.map((f) => [f.column, f] as const));
+      return selectedCols.map((c) => prevMap.get(c) ?? makeDynamicFilter(c));
+    });
+  }
+
   function removeDynamicFilter(col: string) {
     setDynamicFilters((fs) => fs.filter((f) => f.column !== col));
   }
@@ -934,6 +1054,12 @@ export default function DashboardSuppliers() {
         const v = f.value;
         if (v === null) continue;
         out = out.filter((r) => Boolean(r[col]) === v);
+      }
+
+      if (f.kind === "text") {
+        const q = String(f.value ?? "").trim().toLowerCase();
+        if (!q) continue;
+        out = out.filter((r) => safeStr(r[col]).toLowerCase().includes(q));
       }
     }
 
@@ -1401,6 +1527,32 @@ export default function DashboardSuppliers() {
             </div>
           </div>
 
+          {/* Extra filters chooser (select Excel headers) */}
+          <div className="mt-5">
+            {!hasData ? (
+              <div className="rounded-xl border border-slate-200 bg-white px-3 py-3 text-sm text-slate-500 shadow-sm">
+                Cargá un archivo para habilitar los filtros extra por cabecera.
+              </div>
+            ) : (
+              <>
+                <div className="mb-2 flex items-center justify-between">
+                  <div className="text-sm font-semibold text-slate-800">Filtros extra</div>
+                  <div className="text-xs text-slate-500">Seleccionados: {dynamicFilters.length}</div>
+                </div>
+                <MultiSelect
+                  label="Elegí cabeceras del Excel para filtrar"
+                  options={addCandidates}
+                  selected={dynamicFilters.map((f) => f.column)}
+                  onChange={(cols) => syncDynamicFilters(cols)}
+                  placeholder={addCandidates.length ? "Seleccionar columnas…" : "No hay columnas disponibles"}
+                  searchable
+                />
+                <div className="mt-1 text-[11px] text-slate-500">
+                  Columnas con muchos valores (Nombre/Teléfono/Email) se filtran por texto automáticamente.
+                </div>
+              </>
+            )}
+          </div>
           {/* Dynamic filters row */}
           <div className="mt-4 flex flex-wrap items-center gap-2">
             {dynamicFilters.map((f) => (
@@ -1460,41 +1612,21 @@ export default function DashboardSuppliers() {
                     ))}
                   </div>
                 ) : null}
+
+                {f.kind === "text" ? (
+                  <input
+                    value={String(f.value ?? "")}
+                    onChange={(e) =>
+                      setDynamicFilters((fs) =>
+                        fs.map((x) => (x.column === f.column ? { ...x, value: e.target.value } : x))
+                      )
+                    }
+                    placeholder="Buscar… (contiene)"
+                    className="w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm shadow-sm focus:border-slate-300 focus:outline-none"
+                  />
+                ) : null}
               </div>
             ))}
-
-            <div className="relative" ref={addRef}>
-              <button
-                type="button"
-                className="inline-flex items-center gap-2 rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm font-semibold text-slate-800 shadow-sm hover:border-slate-300"
-                onClick={() => setAddOpen((s) => !s)}
-                disabled={!hasData}
-              >
-                ➕ Add filter <span className="text-slate-400">▾</span>
-              </button>
-
-              {addOpen ? (
-                <div className="absolute z-50 mt-2 w-72 overflow-hidden rounded-xl border border-slate-200 bg-white shadow-lg">
-                  <div className="max-h-72 overflow-auto p-2">
-                    {addCandidates.length === 0 ? (
-                      <div className="p-3 text-sm text-slate-500">No hay más columnas relevantes para filtrar.</div>
-                    ) : (
-                      addCandidates.map((c) => (
-                        <button
-                          key={c}
-                          type="button"
-                          className="flex w-full items-center justify-between rounded-lg px-3 py-2 text-left text-sm text-slate-800 hover:bg-slate-50"
-                          onClick={() => createDynamicFilter(c)}
-                        >
-                          <span className="truncate">{c}</span>
-                          <span className="text-xs text-slate-400">{colTypes[c] ?? "unknown"}</span>
-                        </button>
-                      ))
-                    )}
-                  </div>
-                </div>
-              ) : null}
-            </div>
 
             {hasData ? (
               <button
@@ -1963,7 +2095,7 @@ export default function DashboardSuppliers() {
                     disabled={previewPage >= previewTotalPages}
                     onClick={() => setPreviewPage((p) => Math.min(previewTotalPages, p + 1))}
                   >
-                    Siguiente ›
+                    Siguiente › 
                   </button>
 
                   <button
