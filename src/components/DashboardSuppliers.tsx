@@ -104,6 +104,8 @@ const BRAND = {
 // Put the logo file in /public with this exact name.
 const HEADER_LOGO_SRC = "/LogotipoTwinco_Negativo.png";
 
+const EMPTY_OPTION = "(Sin asignar)";
+
 /**
  * Dashboard Suppliers
  * - Carga múltiples CSV/XLSX (se unifican en un solo dataset)
@@ -146,10 +148,55 @@ type FuzzySuggestion = {
 };
 
 function normalizeHeader(h: any) {
-  return String(h ?? "").trim();
+  return String(h ?? "")
+    .replace(/[\u200B-\u200D\uFEFF]/g, "") // zero-width
+    .replace(/\u00A0/g, " ") // NBSP
+    .replace(/\s+/g, " ")
+    .trim();
 }
 function safeStr(v: any) {
-  return String(v ?? "").trim();
+  return String(v ?? "")
+    .replace(/[\u200B-\u200D\uFEFF]/g, "")
+    .replace(/\u00A0/g, " ")
+    .trim();
+}
+function isEmptyish(v: any) {
+  const s = safeStr(v).toLowerCase();
+  return (
+    s === "" ||
+    s === "-" ||
+    s === "—" ||
+    s === "–" ||
+    s === "n/a" ||
+    s === "na" ||
+    s === "nan" ||
+    s === "null" ||
+    s === "undefined"
+  );
+}
+// --- Multi-value tokenization and matching helpers ---
+function splitMultiTokens(v: any) {
+  const s = normStr(v);
+  if (!s) return [] as string[];
+  // HubSpot/CRM exports often separate multi-values with ; or new lines
+  const parts = s.split(/[;|\n]+/g).map((x) => x.trim()).filter(Boolean);
+  return parts.length ? parts : [s];
+}
+
+function multiMatches(v: any, setSel: Set<string>, includeEmpty: boolean) {
+  const s = normStr(v);
+  if (s === "") return includeEmpty;
+  if (setSel.size === 0) return false;
+
+  const tokens = splitMultiTokens(v);
+  for (const t of tokens) {
+    if (setSel.has(t.toLowerCase())) return true;
+  }
+  // fallback: match the whole string too
+  return setSel.has(s.toLowerCase());
+}
+function normStr(v: any) {
+  return isEmptyish(v) ? "" : safeStr(v);
 }
 function uniq<T>(arr: T[]) {
   return Array.from(new Set(arr));
@@ -259,8 +306,11 @@ function sheetToRowsSmart(ws: XLSX.WorkSheet) {
   const scanLimit = Math.min(matrix.length, 30);
   for (let i = 0; i < scanLimit; i++) {
     const row = matrix[i] ?? [];
-    // Skip rows that are basically empty
-    const nonEmpty = row.some((v) => v !== null && v !== undefined && String(v).trim() !== "");
+    // Skip rows that are basically empty (use safeStr/isEmptyish)
+    const nonEmpty = row.some((v) => {
+      const s = safeStr(v);
+      return s !== "" && !isEmptyish(s);
+    });
     if (!nonEmpty) continue;
     const s = scoreHeaderRow(row);
     if (s > bestScore) {
@@ -274,7 +324,10 @@ function sheetToRowsSmart(ws: XLSX.WorkSheet) {
     bestIdx = 0;
     for (let i = 0; i < scanLimit; i++) {
       const row = matrix[i] ?? [];
-      const nonEmpty = row.some((v) => v !== null && v !== undefined && String(v).trim() !== "");
+      const nonEmpty = row.some((v) => {
+        const s = safeStr(v);
+        return s !== "" && !isEmptyish(s);
+      });
       if (nonEmpty) {
         bestIdx = i;
         break;
@@ -288,7 +341,10 @@ function sheetToRowsSmart(ws: XLSX.WorkSheet) {
   const outRows: Row[] = [];
   for (let r = bestIdx + 1; r < matrix.length; r++) {
     const row = matrix[r] ?? [];
-    const nonEmpty = row.some((v) => v !== null && v !== undefined && String(v).trim() !== "");
+    const nonEmpty = row.some((v) => {
+      const s = safeStr(v);
+      return s !== "" && !isEmptyish(s);
+    });
     if (!nonEmpty) continue;
 
     const obj: Row = {};
@@ -296,6 +352,22 @@ function sheetToRowsSmart(ws: XLSX.WorkSheet) {
       const h = headers[c];
       obj[h] = row[c] ?? null;
     }
+
+    // ✅ Definitive: skip rows that are visually empty (incl. NBSP/zero-width/NaN/-/N/A)
+    const filledHeaders = headers.filter((h) => normStr(obj[h]) !== "");
+    if (filledHeaders.length === 0) continue;
+
+    // ✅ Skip garbage rows that only contain IDs (Record ID, *ID, *IDs, etc.)
+    const meaningful = filledHeaders.filter((h) => {
+      const hn = h.toLowerCase().replace(/\s+/g, "");
+      if (hn === "id") return false;
+      if (hn.includes("recordid")) return false;
+      if (hn.endsWith("id")) return false;
+      if (hn.endsWith("ids")) return false;
+      return true;
+    });
+    if (meaningful.length === 0) continue;
+
     outRows.push(obj);
   }
 
@@ -725,6 +797,7 @@ export default function DashboardSuppliers() {
   // Preview pagination (table)
   const [previewPage, setPreviewPage] = useState(1);
   const [previewPageSize, setPreviewPageSize] = useState(30);
+  const [selectedColumns, setSelectedColumns] = useState<string[]>([]);
 
   function showToast(msg: string) {
     setToast(msg);
@@ -760,6 +833,7 @@ export default function DashboardSuppliers() {
     // Reset app state
     setRows([]);
     setHeaders([]);
+    setSelectedColumns([]);
     setColTypes({});
     setFilesLoaded(0);
     setMapping({ Buyer: null, Supplier: null, Country: null, Year: null, Turnover: null, Sector: null });
@@ -823,8 +897,8 @@ export default function DashboardSuppliers() {
       const ws = wb.Sheets[wb.SheetNames[0]];
 
       const parsed = sheetToRowsSmart(ws);
-      const hs = parsed.headers.map(normalizeHeader);
-      if (incomingHeaders.length === 0) incomingHeaders = hs;
+      const hs = parsed.headers.map(normalizeHeader).filter(Boolean);
+      incomingHeaders = uniq([...incomingHeaders, ...hs]).filter(Boolean);
 
       const normalizedRows: Row[] = parsed.rows.map((r) => {
         const nr: Row = {};
@@ -881,6 +955,7 @@ export default function DashboardSuppliers() {
     const supplierChanged = mapping.Supplier !== detected.Supplier;
     setMapping(detected);
     setFilesLoaded((n) => n + fileList.length);
+    setSelectedColumns([]);
 
     // Si cambió la columna Supplier (p.ej. de "Supplier" a "Name"), limpiamos selección para evitar filtros inválidos
     if (supplierChanged) {
@@ -900,33 +975,8 @@ export default function DashboardSuppliers() {
       Sector: [],
       Turnover: { from: null, to: null },
     }));
-
-    if (detected.Buyer) {
-      const vals = uniq(merged.map((r) => safeStr(r[detected.Buyer!])).filter((v) => v !== ""));
-      if (vals.length === 1) setFixedFilters((s) => ({ ...s, Buyer: vals }));
-    }
+    showToast(`Cargado ✅ ${fileList.length} archivo(s)`);
   }
-
-  // Opciones fijas
-  const fixedOptions = useMemo(() => {
-    const opts: Record<string, string[]> = {};
-    for (const key of ["Buyer", "Country", "Year", "Sector"] as const) {
-      const col = mapping[key];
-      if (!col) {
-        opts[key] = [];
-        continue;
-      }
-      opts[key] = uniq(rows.map((r) => safeStr(r[col])).filter(Boolean)).sort((a, b) => a.localeCompare(b));
-    }
-
-    if (mapping.Supplier) {
-      const col = mapping.Supplier;
-      opts.Supplier = uniq(rows.map((r) => supplierDisplay(safeStr(r[col]))).filter(Boolean)).sort((a, b) => a.localeCompare(b));
-    } else {
-      opts.Supplier = [];
-    }
-    return opts;
-  }, [rows, mapping, supplierAliasMap, supplierUnifyEnabled]);
 
   const turnoverRange = useMemo(() => {
     const col = mapping.Turnover;
@@ -935,15 +985,6 @@ export default function DashboardSuppliers() {
     if (nums.length === 0) return { min: 0, max: 0, ok: false };
     return { min: Math.min(...nums), max: Math.max(...nums), ok: true };
   }, [rows, mapping]);
-
-  // Add-filter candidates
-  const addCandidates = useMemo(() => {
-    const fixedCols = new Set(Object.values(mapping).filter(Boolean) as string[]);
-    return headers
-      .filter((h) => !fixedCols.has(h))
-      .filter((h) => !["id", "os_id", "lat", "lng"].includes(h.toLowerCase()))
-      .sort((a, b) => a.localeCompare(b));
-  }, [headers, mapping]);
 
   function makeDynamicFilter(column: string): DynamicFilter {
     const t = colTypes[column] ?? "unknown";
@@ -962,7 +1003,8 @@ export default function DashboardSuppliers() {
     }
 
     // string/unknown: choose multi vs text depending on cardinality
-    const uniqVals = uniq(rows.map((r) => safeStr(r[column])).filter(Boolean));
+    // Use token cardinality for multi-value cells
+    const uniqVals = uniq(rows.flatMap((r) => splitMultiTokens(r[column])));
     if (uniqVals.length > 300) {
       return { id: column, column, kind: "text", value: "" };
     }
@@ -986,9 +1028,12 @@ export default function DashboardSuppliers() {
     const out: Record<string, string[]> = {};
     for (const f of dynamicFilters) {
       if (f.kind !== "multi") continue;
-      out[f.column] = uniq(rows.map((r) => safeStr(r[f.column])).filter(Boolean))
+      const hasEmpty = rows.some((r) => normStr(r[f.column]) === "");
+      const tokens = rows.flatMap((r) => splitMultiTokens(r[f.column]));
+      const base = uniq(tokens)
         .sort((a, b) => a.localeCompare(b))
         .slice(0, 5000);
+      out[f.column] = hasEmpty ? [EMPTY_OPTION, ...base] : base;
     }
     return out;
   }, [dynamicFilters, rows]);
@@ -1001,15 +1046,24 @@ export default function DashboardSuppliers() {
       const col = mapping[k];
       const selected = fixedFilters[k];
       if (!col || selected.length === 0) return;
-      const setSel = new Set(selected.map((x) => x.toLowerCase()));
-      out = out.filter((r) => setSel.has(safeStr(r[col]).toLowerCase()));
+      const includeEmpty = selected.includes(EMPTY_OPTION);
+      const setSel = new Set(selected.filter((x) => x !== EMPTY_OPTION).map((x) => x.toLowerCase()));
+      out = out.filter((r) => multiMatches(r[col], setSel, includeEmpty));
     });
 
     // Supplier (unificado)
     if (mapping.Supplier && fixedFilters.Supplier.length > 0) {
       const col = mapping.Supplier;
-      const setSel = new Set(fixedFilters.Supplier.map((x) => x.toLowerCase()));
-      out = out.filter((r) => setSel.has(supplierDisplay(safeStr(r[col])).toLowerCase()));
+      const includeEmpty = fixedFilters.Supplier.includes(EMPTY_OPTION);
+      const setSel = new Set(
+        fixedFilters.Supplier.filter((x) => x !== EMPTY_OPTION).map((x) => x.toLowerCase())
+      );
+      out = out.filter((r) => {
+        const v = supplierDisplay(normStr(r[col]));
+        if (v === "") return includeEmpty;
+        if (setSel.size === 0) return false;
+        return setSel.has(v.toLowerCase());
+      });
     }
 
     // Turnover
@@ -1034,8 +1088,9 @@ export default function DashboardSuppliers() {
       if (f.kind === "multi") {
         const selected: string[] = f.value ?? [];
         if (!selected.length) continue;
-        const setSel = new Set(selected.map((x) => x.toLowerCase()));
-        out = out.filter((r) => setSel.has(safeStr(r[col]).toLowerCase()));
+        const includeEmpty = selected.includes(EMPTY_OPTION);
+        const setSel = new Set(selected.filter((x) => x !== EMPTY_OPTION).map((x) => x.toLowerCase()));
+        out = out.filter((r) => multiMatches(r[col], setSel, includeEmpty));
       }
 
       if (f.kind === "range") {
@@ -1059,7 +1114,7 @@ export default function DashboardSuppliers() {
       if (f.kind === "text") {
         const q = String(f.value ?? "").trim().toLowerCase();
         if (!q) continue;
-        out = out.filter((r) => safeStr(r[col]).toLowerCase().includes(q));
+        out = out.filter((r) => normStr(r[col]).toLowerCase().includes(q));
       }
     }
 
@@ -1076,12 +1131,15 @@ export default function DashboardSuppliers() {
   }, [filteredRows.length, previewPageSize]);
 
   useEffect(() => {
-    // Clamp page if dataset shrinks
-    setPreviewPage((p) => Math.min(Math.max(1, p), previewTotalPages));
-  }, [previewTotalPages]);
+  setPreviewPage(1);
+}, [fixedFilters, dynamicFilters, selectedColumns]);
 
   const previewFrom = (previewPage - 1) * previewPageSize;
   const previewTo = Math.min(filteredRows.length, previewFrom + previewPageSize);
+  const previewHeaders = useMemo(
+  () => selectedColumns.filter((c) => headers.includes(c)),
+  [selectedColumns, headers]
+  );
   const previewRows = filteredRows.slice(previewFrom, previewTo);
 
   // KPIs + aggregations
@@ -1471,86 +1529,30 @@ export default function DashboardSuppliers() {
       {/* Filters */}
       <div className="border-b" style={{ borderColor: BRAND.softGrey, background: "rgba(255,255,255,0.92)", backdropFilter: "blur(8px)" }}>
         <div className="mx-auto w-full max-w-none px-4 py-9 sm:px-6 lg:px-10 2xl:px-14">
-          <div className="grid grid-cols-1 gap-3 md:grid-cols-6">
-            <MultiSelect
-              label="Buyer"
-              options={fixedOptions.Buyer ?? []}
-              selected={fixedFilters.Buyer}
-              onChange={(v) => setFixedFilters((s) => ({ ...s, Buyer: v }))}
-              placeholder={mapping.Buyer ? "Seleccionar Buyer…" : "Columna no encontrada"}
-            />
-            <MultiSelect
-              label="Supplier"
-              options={fixedOptions.Supplier ?? []}
-              selected={fixedFilters.Supplier}
-              onChange={(v) => setFixedFilters((s) => ({ ...s, Supplier: v }))}
-              placeholder={mapping.Supplier ? "Seleccionar Supplier…" : "Columna no encontrada"}
-            />
-            <MultiSelect
-              label="Country"
-              options={fixedOptions.Country ?? []}
-              selected={fixedFilters.Country}
-              onChange={(v) => setFixedFilters((s) => ({ ...s, Country: v }))}
-              placeholder={mapping.Country ? "Seleccionar Country…" : "Columna no encontrada"}
-            />
-            <MultiSelect
-              label="Year"
-              options={fixedOptions.Year ?? []}
-              selected={fixedFilters.Year}
-              onChange={(v) => setFixedFilters((s) => ({ ...s, Year: v }))}
-              placeholder={mapping.Year ? "Seleccionar Year…" : "Columna no encontrada"}
-            />
-            <MultiSelect
-              label="Sector"
-              options={fixedOptions.Sector ?? []}
-              selected={fixedFilters.Sector}
-              onChange={(v) => setFixedFilters((s) => ({ ...s, Sector: v }))}
-              placeholder={mapping.Sector ? "Seleccionar Sector…" : "Columna no encontrada"}
-            />
-            <div>
-              {mapping.Turnover && turnoverRange.ok ? (
-                <RangeFilter
-                  label="Turnover"
-                  min={turnoverRange.min}
-                  max={turnoverRange.max}
-                  value={fixedFilters.Turnover}
-                  onChange={(v) => setFixedFilters((s) => ({ ...s, Turnover: v }))}
-                />
-              ) : (
-                <div>
-                  <div className="mb-1 text-xs font-medium text-slate-700">Turnover</div>
-                  <div className="rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm text-slate-400 shadow-sm">
-                    Columna no encontrada / sin valores numéricos
-                  </div>
-                </div>
-              )}
-            </div>
-          </div>
+          
 
-          {/* Extra filters chooser (select Excel headers) */}
           <div className="mt-5">
             {!hasData ? (
               <div className="rounded-xl border border-slate-200 bg-white px-3 py-3 text-sm text-slate-500 shadow-sm">
                 Cargá un archivo para habilitar los filtros extra por cabecera.
               </div>
             ) : (
-              <>
-                <div className="mb-2 flex items-center justify-between">
-                  <div className="text-sm font-semibold text-slate-800">Filtros extra</div>
-                  <div className="text-xs text-slate-500">Seleccionados: {dynamicFilters.length}</div>
-                </div>
+              <div className="grid grid-cols-1 gap-3">
                 <MultiSelect
-                  label="Elegí cabeceras del Excel para filtrar"
-                  options={addCandidates}
-                  selected={dynamicFilters.map((f) => f.column)}
-                  onChange={(cols) => syncDynamicFilters(cols)}
-                  placeholder={addCandidates.length ? "Seleccionar columnas…" : "No hay columnas disponibles"}
+                  label="Columnas (y filtros)"
+                  options={headers}
+                  selected={selectedColumns}
+                  onChange={(cols) => {
+                    setSelectedColumns(cols);
+                    syncDynamicFilters(cols);
+                  }}
+                  placeholder={headers.length ? "Elegí columnas para ver y filtrar…" : "Cargá un Excel para ver columnas"}
                   searchable
                 />
-                <div className="mt-1 text-[11px] text-slate-500">
-                  Columnas con muchos valores (Nombre/Teléfono/Email) se filtran por texto automáticamente.
+                <div className="text-xs text-slate-600">
+                  Elegí una o más cabeceras (ej: “Nombre”). La tabla mostrará SOLO esas columnas y debajo se generan los filtros.
                 </div>
-              </>
+              </div>
             )}
           </div>
           {/* Dynamic filters row */}
@@ -1633,16 +1635,17 @@ export default function DashboardSuppliers() {
                 type="button"
                 className="ml-auto rounded-xl bg-slate-900 px-3 py-2 text-sm font-semibold text-white hover:bg-slate-800"
                 onClick={() => {
-                  setFixedFilters({
-                    Buyer: [],
-                    Supplier: [],
-                    Country: [],
-                    Year: [],
-                    Sector: [],
-                    Turnover: { from: null, to: null },
-                  });
-                  setDynamicFilters([]);
-                }}
+  setSelectedColumns([]);
+  setDynamicFilters([]);
+  setFixedFilters({
+    Buyer: [],
+    Supplier: [],
+    Country: [],
+    Year: [],
+    Sector: [],
+    Turnover: { from: null, to: null },
+  });
+}}
               >
                 Limpiar filtros
               </button>
@@ -2006,28 +2009,42 @@ export default function DashboardSuppliers() {
                 </span>
               }
             >
-              <div className="overflow-auto rounded-xl border border-slate-200">
-                <table className="min-w-full text-left text-sm">
-                  <thead className="bg-slate-50 text-xs text-slate-600">
-                    <tr>
-                      {headers.slice(0, 10).map((h) => (
-                        <th key={h} className="whitespace-nowrap px-3 py-2 font-semibold">{h}</th>
-                      ))}
-                      {headers.length > 10 ? <th className="px-3 py-2 font-semibold text-slate-400">…</th> : null}
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {previewRows.map((r, idx) => (
-                      <tr key={idx} className="border-t border-slate-100">
-                        {headers.slice(0, 10).map((h) => (
-                          <td key={h} className="max-w-[260px] truncate px-3 py-2 text-slate-800">{safeStr(r[h])}</td>
+              {previewHeaders.length === 0 ? (
+                <div className="rounded-xl border border-dashed border-slate-300 bg-white p-6 text-sm text-slate-600">
+                  Elegí al menos una columna en “Columnas (y filtros)” para ver la vista previa.
+                </div>
+              ) : (
+                <div className="overflow-auto min-h-[360px] rounded-xl border border-slate-200">
+                  <table className="min-w-full text-left text-sm">
+                    <thead className="bg-slate-50 text-xs text-slate-600">
+                      <tr>
+                        {previewHeaders.map((h) => (
+                          <th key={h} className="whitespace-nowrap px-3 py-2 font-semibold">
+                            {h}
+                          </th>
                         ))}
-                        {headers.length > 10 ? <td className="px-3 py-2 text-slate-400">…</td> : null}
                       </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
+                    </thead>
+                    <tbody>
+                      {previewRows
+                        .filter((r) => !previewHeaders.every((h) => normStr(r?.[h]) === ""))
+                        .map((r, idx) => (
+                          <tr key={String(r?.["Record ID"] ?? idx)} className="border-b border-slate-100 last:border-0">
+                            {previewHeaders.map((h) => {
+                              const v = r?.[h];
+                              const s = v === null || v === undefined ? "" : String(v);
+                              return (
+                                <td key={h} className="px-3 py-2 text-xs text-slate-700">
+                                  <span className="block truncate">{s}</span>
+                                </td>
+                              );
+                            })}
+                          </tr>
+                        ))}
+                    </tbody>
+                  </table>
+                </div>
+              )}
 
               <div className="mt-3 flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
                 <div className="text-xs text-slate-600">
