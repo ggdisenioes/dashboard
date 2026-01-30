@@ -578,7 +578,7 @@ function Card({ title, right, children }: { title: string; right?: React.ReactNo
 }
 function EmptyState({ text }: { text: string }) {
   return (
-    <div className="rounded-2xl border border-dashed border-slate-300 bg-white p-10 text-center text-sm text-slate-600">
+    <div className="mx-auto w-full max-w-xl rounded-2xl border border-dashed border-slate-300 bg-white p-6 text-center text-sm text-slate-600 sm:p-10">
       {text}
     </div>
   );
@@ -1430,7 +1430,7 @@ export default function DashboardSuppliers() {
   }, [supplierGroups, supplierGroupSearch, showResolvedReconciliation]);
 
   return (
-    <div className="min-h-screen" style={{ background: BRAND.lightGrey }}>
+    <div className="min-h-screen overflow-x-hidden" style={{ background: BRAND.lightGrey }}>
       {toast ? (
         <div className="pointer-events-none fixed left-1/2 top-4 z-[999] -translate-x-1/2 rounded-xl bg-slate-900 px-4 py-2 text-sm font-semibold text-white shadow-lg">
           {toast}
@@ -1438,7 +1438,7 @@ export default function DashboardSuppliers() {
       ) : null}
       {/* Top bar */}
       <div className="border-b" style={{ borderColor: BRAND.darkBlue, background: BRAND.navy }}>
-        <div className="mx-auto w-full max-w-screen-2xl px-4 py-6 sm:px-6 sm:py-10 lg:px-10 lg:py-12 2xl:px-14">
+        <div className="mx-auto w-full max-w-none px-4 py-8 sm:px-6 sm:py-10 lg:px-10 lg:py-12 2xl:px-14">
           <div className="grid grid-cols-1 gap-3 md:grid-cols-3 md:items-center">
             <div className="text-center md:text-left">
               <div className="text-sm font-semibold text-white/90 tracking-wide">SUPPLIERS DASHBOARD</div>
@@ -1523,12 +1523,10 @@ export default function DashboardSuppliers() {
         </div>
       </div>
 
-      {/* Spacer to keep filters lower under the large header */}
-      <div className="h-4 sm:h-8" style={{ background: BRAND.lightGrey }} />
 
       {/* Filters */}
       <div className="border-b" style={{ borderColor: BRAND.softGrey, background: "rgba(255,255,255,0.92)", backdropFilter: "blur(8px)" }}>
-        <div className="mx-auto w-full max-w-screen-2xl px-4 py-4 sm:px-6 sm:py-6 lg:px-10 2xl:px-14">
+        <div className="mx-auto w-full max-w-none px-4 py-3 sm:px-6 sm:py-4 lg:px-10 2xl:px-14">
 
           <div className="mt-3">
             {!hasData ? (
@@ -1654,9 +1652,9 @@ export default function DashboardSuppliers() {
       </div>
 
       {/* Main */}
-      <div className="mx-auto w-full max-w-none px-4 py-6 sm:px-6 lg:px-10 2xl:px-14">
+      <div className="mx-auto w-full max-w-none px-4 py-4 sm:px-6 lg:px-10 2xl:px-14">
         {!hasData ? (
-          <div className="flex min-h-[60vh] items-center justify-center">
+          <div className="flex min-h-[40vh] items-center justify-center">
             <EmptyState text="Cargá tus Excel/CSV para generar el dashboard automáticamente (todo se procesa localmente)." />
           </div>
         ) : (
