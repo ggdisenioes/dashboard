@@ -1213,23 +1213,35 @@ export default function DashboardSuppliers() {
     return { total, uniqueSuppliers, uniqueCountries, turnoverSum, turnoverAvg, byCountry, byYear };
   }, [filteredRows, mapping, supplierAliasMap, supplierUnifyEnabled]);
 
-  // Export filtered results to Excel
+  // Export filtered results to Excel (ONLY columns shown in preview)
   function exportFilteredToExcel() {
     if (!filteredRows.length) return;
 
+    // Columns to export: same as preview (selectedColumns), preserving order.
+    // If user didn't choose columns, export all headers.
+    const cols = (selectedColumns.length ? selectedColumns : headers).filter((c) => headers.includes(c));
+    if (!cols.length) return;
+
     const supplierCol = mapping.Supplier;
 
-    // Armamos exportRows: si unify ON y hay Supplier, agregamos columna "Supplier (Unified)"
-    const exportRows = filteredRows.map((r) => {
-      const obj: Row = { ...r };
-      if (supplierCol) {
-        const raw = safeStr(r[supplierCol]);
-        obj["Supplier (Unified)"] = supplierDisplay(raw);
-      }
-      return obj;
-    });
+    // Build AOA to keep exact column order
+    const aoa: any[][] = [];
+    aoa.push(cols);
 
-    const ws = XLSX.utils.json_to_sheet(exportRows);
+    for (const r of filteredRows) {
+      const rowArr = cols.map((c) => {
+        // If exporting the Supplier column and unification is enabled, export the unified display
+        if (supplierCol && c === supplierCol && supplierUnifyEnabled) {
+          const raw = safeStr(r[supplierCol]);
+          return supplierDisplay(raw);
+        }
+        const v = r[c];
+        return v === null || v === undefined ? "" : v;
+      });
+      aoa.push(rowArr);
+    }
+
+    const ws = XLSX.utils.aoa_to_sheet(aoa);
     const wb = XLSX.utils.book_new();
     XLSX.utils.book_append_sheet(wb, ws, "Filtered");
 
