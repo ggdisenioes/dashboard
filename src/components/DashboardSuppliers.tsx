@@ -230,6 +230,19 @@ function formatCompact(n: number) {
 function classNames(...xs: Array<string | false | null | undefined>) {
   return xs.filter(Boolean).join(" ");
 }
+/** Dangerous keys that could be used for prototype pollution */
+const PROTO_POISON_KEYS = new Set(["__proto__", "constructor", "prototype"]);
+
+/** Strip any prototype-polluting keys from a parsed row */
+function sanitizeRow(row: Row): Row {
+  const safe: Row = Object.create(null);
+  for (const key of Object.keys(row)) {
+    if (PROTO_POISON_KEYS.has(key)) continue;
+    safe[key] = row[key];
+  }
+  return safe;
+}
+
 function inferColType(rows: Row[], col: string): ColType {
   const sample = rows
     .map((r) => r[col])
@@ -659,7 +672,7 @@ function MultiSelect({
               <div className="p-3 text-sm text-slate-500">Sin resultados</div>
             ) : (
               filteredOptions.map((o) => (
-                <label key={o} className="flex cursor-pointer items-center gap-2 rounded-lg px-2 py-2 text-sm hover:bg-slate-50">
+                <label key={o} title={o} className="flex cursor-pointer items-center gap-2 rounded-lg px-2 py-2 text-sm hover:bg-slate-50">
                   <input
                     type="checkbox"
                     checked={selected.includes(o)}
@@ -803,6 +816,7 @@ export default function DashboardSuppliers() {
   // UI feedback
   const [toast, setToast] = useState<string | null>(null);
   const toastTimerRef = useRef<number | null>(null);
+  const [isLoading, setIsLoading] = useState(false);
 
   // Preview pagination (table)
   const [previewPage, setPreviewPage] = useState(1);
@@ -812,7 +826,7 @@ export default function DashboardSuppliers() {
   function showToast(msg: string) {
     setToast(msg);
     if (toastTimerRef.current) window.clearTimeout(toastTimerRef.current);
-    toastTimerRef.current = window.setTimeout(() => setToast(null), 1800);
+    toastTimerRef.current = window.setTimeout(() => setToast(null), 3000);
   }
 
   // Keep latest values to avoid stale closures in click handlers
@@ -897,11 +911,40 @@ export default function DashboardSuppliers() {
     return supplierAliasMap[raw] ?? raw;
   }
 
+  const MAX_FILE_SIZE_BYTES = 50 * 1024 * 1024; // 50 MB
+  const MAX_TOTAL_ROWS = 200_000;
+  const ALLOWED_MIME_TYPES = new Set([
+    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", // xlsx
+    "application/vnd.ms-excel", // xls
+    "text/csv",
+    "text/plain", // some OS report csv as text/plain
+    "application/csv",
+    "application/octet-stream", // fallback when OS doesn't detect type
+  ]);
+
   async function loadFiles(fileList: FileList) {
+    setIsLoading(true);
     const incomingRows: Row[] = [];
     let incomingHeaders: string[] = [];
 
     for (const file of Array.from(fileList)) {
+      // --- Security: validate file size ---
+      if (file.size > MAX_FILE_SIZE_BYTES) {
+        showToast(`❌ "${file.name}" supera el límite de 50 MB`);
+        continue;
+      }
+
+      // --- Security: validate MIME type ---
+      const mimeOk =
+        ALLOWED_MIME_TYPES.has(file.type) ||
+        file.name.endsWith(".csv") ||
+        file.name.endsWith(".xlsx") ||
+        file.name.endsWith(".xls");
+      if (!mimeOk) {
+        showToast(`❌ Tipo de archivo no permitido: "${file.name}"`);
+        continue;
+      }
+
       const buf = await file.arrayBuffer();
       const wb = XLSX.read(buf, { type: "array" });
       const ws = wb.Sheets[wb.SheetNames[0]];
@@ -912,8 +955,11 @@ export default function DashboardSuppliers() {
 
       const normalizedRows: Row[] = parsed.rows.map((r) => {
         const nr: Row = {};
-        for (const k of Object.keys(r)) nr[normalizeHeader(k)] = r[k];
-        return nr;
+        for (const k of Object.keys(r)) {
+          const safeKey = normalizeHeader(k);
+          if (!PROTO_POISON_KEYS.has(safeKey)) nr[safeKey] = r[k];
+        }
+        return sanitizeRow(nr);
       });
 
       incomingRows.push(...normalizedRows);
@@ -958,7 +1004,13 @@ export default function DashboardSuppliers() {
         pickColumn(headerUnion, ["Sector", "sector", "Industry", "industry"]),
     };
 
-    setRows(merged);
+    // --- Security: cap total rows to avoid browser memory DoS ---
+    const capped = merged.length > MAX_TOTAL_ROWS ? merged.slice(0, MAX_TOTAL_ROWS) : merged;
+    if (merged.length > MAX_TOTAL_ROWS) {
+      showToast(`⚠️ Dataset recortado a ${MAX_TOTAL_ROWS.toLocaleString()} filas (límite de seguridad)`);
+    }
+
+    setRows(capped);
     setHeaders(headerUnion);
     setColTypes(types);
     // Safety reset: if the supplier column changed, clear supplier-related filters
@@ -973,7 +1025,7 @@ export default function DashboardSuppliers() {
     }
 
     // recalcular conciliación total
-    recomputeSupplierStuff(merged, detected.Supplier);
+    recomputeSupplierStuff(capped, detected.Supplier);
 
     // Reset filtros (dejamos Buyer si único)
     setDynamicFilters([]);
@@ -985,6 +1037,7 @@ export default function DashboardSuppliers() {
       Sector: [],
       Turnover: { from: null, to: null },
     }));
+    setIsLoading(false);
     showToast(`Cargado ✅ ${fileList.length} archivo(s)`);
   }
 
@@ -1454,8 +1507,27 @@ export default function DashboardSuppliers() {
   return (
     <div className="min-h-screen overflow-x-hidden" style={{ background: BRAND.lightGrey }}>
       {toast ? (
-        <div className="pointer-events-none fixed left-1/2 top-4 z-[999] -translate-x-1/2 rounded-xl bg-slate-900 px-4 py-2 text-sm font-semibold text-white shadow-lg">
+        <div
+          role="alert"
+          aria-live="polite"
+          className="pointer-events-none fixed left-1/2 top-4 z-[999] -translate-x-1/2 rounded-xl bg-slate-900 px-4 py-2 text-sm font-semibold text-white shadow-lg"
+        >
           {toast}
+        </div>
+      ) : null}
+      {isLoading ? (
+        <div
+          role="status"
+          aria-label="Cargando archivos…"
+          className="pointer-events-none fixed inset-0 z-[998] flex items-center justify-center bg-black/30 backdrop-blur-sm"
+        >
+          <div className="flex flex-col items-center gap-3 rounded-2xl bg-white px-8 py-6 shadow-xl">
+            <svg className="h-8 w-8 animate-spin" style={{ color: BRAND.navy }} viewBox="0 0 24 24" fill="none" aria-hidden="true">
+              <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+              <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v4a4 4 0 00-4 4H4z" />
+            </svg>
+            <span className="text-sm font-semibold" style={{ color: BRAND.navy }}>Procesando archivo(s)…</span>
+          </div>
         </div>
       ) : null}
       {/* Top bar */}
@@ -1484,12 +1556,15 @@ export default function DashboardSuppliers() {
               <label
                 className="inline-flex cursor-pointer items-center gap-2 rounded-xl border px-3 py-2 text-sm shadow-sm"
                 style={{ borderColor: "rgba(255,255,255,0.18)", background: "rgba(255,255,255,0.06)" }}
+                aria-label="Cargar archivos CSV o Excel"
               >
                 <input
                   type="file"
                   accept=".xlsx,.xls,.csv"
                   multiple
+                  disabled={isLoading}
                   className="hidden"
+                  aria-label="Seleccionar archivos CSV o Excel (máx. 50 MB)"
                   onChange={(e) => {
                     const fl = e.target.files;
                     if (fl && fl.length) loadFiles(fl);
@@ -1505,6 +1580,7 @@ export default function DashboardSuppliers() {
                   style={{ borderColor: "rgba(255,255,255,0.18)", background: "rgba(255,255,255,0.06)", color: "rgba(255,255,255,0.9)" }}
                   onClick={clearSavedSession}
                   title="Borra la sesión guardada (datos + decisiones)"
+                  aria-label="Borrar sesión guardada"
                 >
                   🧹 Borrar sesión
                 </button>
@@ -1517,6 +1593,7 @@ export default function DashboardSuppliers() {
                 disabled={!hasData || filteredRows.length === 0}
                 onClick={exportFilteredToExcel}
                 title={!hasData ? "Cargá archivos" : filteredRows.length === 0 ? "No hay filas para exportar" : "Exportar filtrado"}
+                aria-label="Exportar datos filtrados a Excel"
               >
                 ⬇ Export Excel (filtrado)
               </button>
@@ -2086,8 +2163,8 @@ export default function DashboardSuppliers() {
                               const v = r?.[h];
                               const s = v === null || v === undefined ? "" : String(v);
                               return (
-                                <td key={h} className="px-3 py-2 text-xs text-slate-700">
-                                  <span className="block truncate">{s}</span>
+                                <td key={h} className="px-3 py-2 text-xs text-slate-700" title={s || undefined}>
+                                  <span className="block max-w-[200px] truncate">{s}</span>
                                 </td>
                               );
                             })}
@@ -2127,6 +2204,7 @@ export default function DashboardSuppliers() {
                     className="rounded-xl border border-slate-200 bg-white px-3 py-2 text-xs font-semibold text-slate-800 disabled:opacity-40"
                     disabled={previewPage <= 1}
                     onClick={() => setPreviewPage(1)}
+                    aria-label="Primera página"
                   >
                     « Primera
                   </button>
@@ -2136,6 +2214,7 @@ export default function DashboardSuppliers() {
                     className="rounded-xl border border-slate-200 bg-white px-3 py-2 text-xs font-semibold text-slate-800 disabled:opacity-40"
                     disabled={previewPage <= 1}
                     onClick={() => setPreviewPage((p) => Math.max(1, p - 1))}
+                    aria-label="Página anterior"
                   >
                     ‹ Anterior
                   </button>
@@ -2163,8 +2242,9 @@ export default function DashboardSuppliers() {
                     className="rounded-xl border border-slate-200 bg-white px-3 py-2 text-xs font-semibold text-slate-800 disabled:opacity-40"
                     disabled={previewPage >= previewTotalPages}
                     onClick={() => setPreviewPage((p) => Math.min(previewTotalPages, p + 1))}
+                    aria-label="Página siguiente"
                   >
-                    Siguiente › 
+                    Siguiente ›
                   </button>
 
                   <button
@@ -2172,6 +2252,7 @@ export default function DashboardSuppliers() {
                     className="rounded-xl border border-slate-200 bg-white px-3 py-2 text-xs font-semibold text-slate-800 disabled:opacity-40"
                     disabled={previewPage >= previewTotalPages}
                     onClick={() => setPreviewPage(previewTotalPages)}
+                    aria-label="Última página"
                   >
                     Última »
                   </button>
